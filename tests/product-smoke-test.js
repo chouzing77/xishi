@@ -1,0 +1,60 @@
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const root = path.resolve(__dirname, "..");
+const html = fs.readFileSync(path.join(root, "src", "index.html"), "utf8");
+const main = fs.readFileSync(path.join(root, "src", "main.js"), "utf8");
+const preload = fs.readFileSync(path.join(root, "src", "preload.js"), "utf8");
+let passed = 0;
+function test(name, condition) {
+  if (!condition) throw new Error("FAIL: " + name);
+  passed++;
+  console.log("PASS", name);
+}
+
+const script = html.match(/<script>([\s\S]*)<\/script>/);
+test("页面包含内联业务脚本", !!script);
+new vm.Script(script[1], { filename: "index-inline.js" });
+test("页面脚本语法有效", true);
+new vm.Script(main, { filename: "main.js" });
+new vm.Script(preload, { filename: "preload.js" });
+test("主进程与安全桥脚本语法有效", true);
+test("日/周/月三个主视图齐全", ["viewDay", "viewWeek", "viewMonth"].every(x => html.includes(`id="${x}"`)));
+test("日视图采用 24 小时时间轴", html.includes("agenda-shell") && html.includes("h<24"));
+test("无全天事项时隐藏整条全天栏", html.includes(".agenda-shell.no-all .agenda-all{display:none;}") && !html.includes("无全天事项"));
+test("周视图采用 7 列小时网格", html.includes("repeat(7,1fr)") && html.includes("wk-rail"));
+test("月视图有固定星期表头", html.includes("mo-weekdays") && html.includes("周一") && html.includes("周日"));
+test("事件支持时间点、时间段和全天", ["point","range","allDay","mEnd"].every(x => html.includes(x)));
+test("日视图重叠事件自动等宽分列", html.includes("layoutTimed") && html.includes("pos.col*100/pos.cols"));
+test("周视图单击可创建时间点", html.includes('openModal({kind:"point"'));
+test("周视图长按拖动可创建时间段", html.includes("drag-preview") && html.includes("setTimeout(showPreview,280)") && html.includes('openModal({kind:"range"'));
+test("日视图单击可创建时间点", html.includes("finishDayCreate") && html.includes('openModal({kind:"point",date:x.date'));
+test("日视图长按拖动可创建时间段", html.includes("showDayPreview") && html.includes("setTimeout(showDayPreview,280)") && html.includes('openModal({kind:"range",date:x.date'));
+test("事件名称在第一行、时间在第二行", html.includes('.pill .pt{display:block') && html.includes('.pill .pt-time{display:block') && html.includes('.time-block.point-event .tb-time{display:block'));
+test("待办框支持设置已完成状态", html.includes('id="mDone"') && html.includes("mDoneValue"));
+test("日周视图短按事件打开编辑框", html.includes("openEdit(k, id)") && html.includes("openEdit(p.dataset.date,p.dataset.id)"));
+test("日周视图长按事件切换完成状态", html.includes("bindLongComplete") && html.includes("setTimeout(()=>") && html.includes("已标记为已完成"));
+test("当前时间线已实现", html.includes("now-line"));
+test("提醒使用时间窗口而非整分钟硬匹配", html.includes("windowStart") && !html.includes("t.time !== hhmm"));
+test("提醒防重复记录持久化", html.includes("mochi_reminded_v2"));
+test("通知点击可唤回窗口", main.includes('n.on("click"'));
+test("Windows 通知身份已注册", main.includes("setAppUserModelId"));
+test("通知桥接存在", preload.includes("notify:") && main.includes('ipcMain.on("notify"'));
+test("仅事件完成播放轻巧提示音", html.includes("playCompleteSound") && html.includes("if(t.done)playCompleteSound()") && html.includes("if(becameDone)playCompleteSound()") && !html.includes('playSound("tap")'));
+test("周视图全天事件支持短按编辑与长按完成", html.includes("wk-all-event") && html.includes('bindLongComplete($("wkGrid"),".pill,.wk-all-event")'));
+test("所有滚动区域使用统一细滚动条", html.includes(":where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar"));
+test("右下角缩放同时调整宽度和高度", html.includes("state.cfg.height") && html.includes("e.clientY - rsz.y") && html.includes("--panel-h"));
+test("全部待办左侧提供年月日筛选导航", html.includes("fish-nav") && html.includes("fish-year") && html.includes("fish-month") && html.includes("fish-date-link"));
+test("全部待办已移除冗余说明文字", !html.includes("鱼骨时间轴 · 按日期排列") && !html.includes("按日期跳转"));
+test("日期筛选可跳转到对应日期", html.includes("data-jump") && html.includes("scrollIntoView"));
+test("每日待办使用醒目的大日期分隔", html.includes("fish-date-head") && html.includes("fish-date-num") && html.includes("fish-day"));
+test("全部待办扩大事件卡片与整体内容区", html.includes("min-width:190px") && html.includes("max-height:min(76vh,760px)") && html.includes("min-height:min(66vh,650px)"));
+test("提醒测试入口已实现", html.includes("testRemindBtn"));
+test("键盘快捷键仍可切换三视图", ['e.key === "1"','e.key === "2"','e.key === "3"'].every(x => html.includes(x)));
+test("键盘焦点可见", html.includes(":focus-visible"));
+test("尊重减少动态效果偏好", html.includes("prefers-reduced-motion"));
+test("本地数据、导入导出与备份链路保留", ["localStorage", "exportAs", "impFile", "backup-save"].every(x => html.includes(x) || main.includes(x)));
+test("渲染进程保持 contextIsolation 安全边界", main.includes("contextIsolation: true") && preload.includes("contextBridge"));
+
+console.log(`\n${passed} 项产品冒烟测试全部通过。`);
