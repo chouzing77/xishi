@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>毛玻璃日程看板</title>
+<style>
+/* ================= 基础变量（由设置面板实时改写） ================= */
+:root{
+  --panel-w: 860px;
+  --scale: 1;
+  --alpha: 0.265;        /* 玻璃底色不透明度，由「透明度」滑杆推导 */
+  --blur: 38px;
+  --sat: 145%;
+
+  --glass: rgba(26,26,30, var(--alpha));
+  --glass-2: rgba(255,255,255,0.055);
+  --glass-3: rgba(255,255,255,0.09);
+  --line: rgba(255,255,255,0.10);
+  --line-2: rgba(255,255,255,0.16);
+
+  --text: #ffffff;
+  --dim: rgba(255,255,255,0.62);
+  --dim-2: rgba(255,255,255,0.40);
+  --invert: #14141a;      /* 亮色字模式下选中态的反色文字 */
+
+  --radius: 26px;
+  --r-sm: 12px;
+  --font: -apple-system, "SF Pro SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --hour-h: 54px;
+}
+
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+button:focus-visible,input:focus-visible,select:focus-visible,.cell:focus-visible,.mo-cell:focus-visible,.pill:focus-visible{outline:2px solid #7fc8ff;outline-offset:2px;}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}
+html,body{height:100%;margin:0;}
+body{
+  font-family:var(--font);
+  color:var(--text);
+  overflow:hidden;
+  background:transparent;   /* 桌面透明：不绘制自己的底色 */
+}
+
+/* ================= 背景墙（可换图 / 可透明） ================= */
+#wall{
+  position:fixed; inset:0;
+  background:
+    radial-gradient(120% 80% at 12% 8%, #8fc0d8 0%, #5d7f92 26%, #2c4150 52%, #16212a 78%, #0a1015 100%),
+    linear-gradient(180deg,#7ea8bd 0%, #3c5566 45%, #10181e 100%);
+  background-size:cover; background-position:center;
+  transition:opacity .25s ease;
+}
+#wall::after{
+  content:""; position:absolute; inset:0;
+  background:
+    radial-gradient(60% 50% at 78% 22%, rgba(255,214,140,.16), transparent 70%),
+    radial-gradient(40% 40% at 20% 85%, rgba(0,0,0,.35), transparent 70%);
+  pointer-events:none;
+}
+body.plain-wall #wall{opacity:0; background:transparent;}
+
+/* ================= 舞台与看板外框 ================= */
+#stage{
+  position:fixed; inset:0;
+  display:flex; align-items:flex-start; justify-content:center;
+  padding:28px 28px 32px;   /* 桌面透明：留白尽量小，减少遮挡桌面点击 */
+  overflow:auto;
+}
+
+.board{
+  position:relative;
+  width:var(--panel-w);
+  transform:scale(var(--scale));
+  transform-origin:top center;
+  border-radius:var(--radius);
+  background:var(--glass);
+  backdrop-filter:blur(var(--blur)) saturate(var(--sat));
+  -webkit-backdrop-filter:blur(var(--blur)) saturate(var(--sat));
+  border:1px solid var(--line-2);
+  box-shadow:
+    0 30px 70px rgba(0,0,0,.34),
+    0 2px 0 rgba(255,255,255,.07) inset,
+    0 0 0 1px rgba(0,0,0,.06) inset;
+  padding:18px 22px 14px;
+  color:var(--text);
+  user-select:none;
+}
+.board.user-sized{height:var(--panel-h);display:flex;flex-direction:column;}
+.board.user-sized .view.on{flex:1 1 auto;min-height:0;}
+.board.user-sized #viewDay.on{display:flex;flex-direction:column;}
+.board.user-sized #dayList{flex:1 1 auto;min-height:0;}
+.board.user-sized .agenda-shell,.board.user-sized .wk-grid{height:100%;max-height:none;}
+.board.user-sized #viewWeek.on{display:flex;flex-direction:column;}
+.board.user-sized #viewMonth,.board.user-sized #viewFish{overflow:auto;}
+/* 玻璃高光 */
+.board::before{
+  content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+  background:linear-gradient(160deg, rgba(255,255,255,.14), rgba(255,255,255,.03) 34%, transparent 62%);
+}
+
+/* 右下角缩放手柄（对应截图右下小三角） */
+.resize{
+  position:absolute; right:6px; bottom:6px; width:16px; height:16px;
+  cursor:nwse-resize; opacity:.5;
+}
+.resize::before,.resize::after{
+  content:""; position:absolute; right:2px; bottom:2px;
+  border-right:2px solid var(--text); border-bottom:2px solid var(--text);
+}
+.resize::before{width:10px;height:10px;}
+.resize::after{width:5px;height:5px;}
+
+/* ================= 顶栏 ================= */
+.window-drag-edge{position:absolute;top:0;left:18px;right:18px;height:12px;-webkit-app-region:drag;user-select:none;}
+body.compact .window-drag-edge{left:14px;right:14px;height:10px;}
+.head{
+  display:flex; align-items:center; justify-content:space-between;
+  gap:14px; padding:2px 2px 12px;
+  -webkit-app-region:drag;   /* 拖顶栏 = 移动整个窗口（透明无边框窗口必须） */
+  user-select:none;
+}
+/* 顶栏内的按钮等控件要能点，必须排除拖拽区 */
+.head button,
+.head input,
+.head select,
+.head .seg,
+.head .title-main{-webkit-app-region:no-drag;}
+.head-left{display:flex; align-items:center; gap:12px; min-width:0;}
+.head-right{display:flex; align-items:center; gap:10px; flex:0 0 auto;}
+
+/* ---- 窗口控制按钮：缩小为便签 / 关闭 ---- */
+.win-btn{
+  width:30px; height:30px; flex:0 0 auto; border-radius:9px;
+  display:grid; place-items:center; cursor:pointer; padding:0;
+  background:var(--glass-2); border:1px solid var(--line);
+  color:var(--text); font-size:15px; line-height:1;
+  transition:background .18s, transform .18s;
+}
+.win-btn:hover{background:var(--glass-3);}
+.win-btn:active{transform:scale(.92);}
+.win-btn.pin{font-size:13px; filter:grayscale(1) brightness(1.6);}
+.win-btn.pin:hover{background:rgba(255,255,255,.24);}
+.win-btn.pin.on{filter:none;}
+.win-btn.close:hover{background:#ff5f56; border-color:#ff5f56; color:#fff;}
+.win-btn.compact:hover{background:rgba(255,255,255,.24);}
+.win-btn.on{background:var(--text); color:var(--invert); border-color:transparent;}
+
+/* ---- 便签模式：缩小后只显示今日日程 ---- */
+body.compact #stage{padding:6px; overflow:hidden;}
+body.compact .board{width:100%;min-width:0;max-width:100%;height:auto!important;min-height:0;padding:12px 14px 10px;border-radius:18px;}
+body.compact .scroll-y, body.compact .task-list{min-width:0;}
+body.compact .head{padding-bottom:8px; gap:8px;}
+body.compact .nav-btn,
+body.compact .seg,
+body.compact .live-dot,
+body.compact #fishBtn,
+body.compact #addBtn,
+body.compact #gearBtn,
+body.compact #pinBtn,
+body.compact .legend,
+body.compact .resize{display:none !important;}
+body.compact .title-main{font-size:19px;}
+body.compact .title-sub{font-size:11px;}
+body.compact .hero{margin-bottom:6px;}
+body.compact .big-num{font-size:38px;}
+body.compact .scroll-y{max-height:240px;}
+body.compact #dayList{max-height:240px;overflow:auto;}
+body.compact .task{padding:10px 14px 10px 18px;display:flex;flex-direction:column;align-items:stretch;gap:6px;cursor:pointer;}
+body.compact .t-title{font-size:14px;white-space:normal;overflow-wrap:anywhere;}
+body.compact .t-meta{font-size:12px;flex-wrap:wrap;}
+body.compact .task .check,body.compact .task .t-edit,body.compact .task .t-del{display:none;}
+
+/* ---- 窗口紧贴看板：窗口尺寸跟随看板，四周不留透明死区（否则会挡住桌面点击） ---- */
+body.fit-on #stage{padding:0;}
+
+.nav-btn{
+  width:32px; height:32px; flex:0 0 auto; border-radius:50%;
+  display:grid; place-items:center; cursor:pointer;
+  background:var(--glass-2); border:1px solid var(--line);
+  color:var(--text); font-size:17px; line-height:1; padding-bottom:2px;
+  transition:background .18s, transform .18s;
+}
+.nav-btn:hover{background:var(--glass-3);}
+.nav-btn:active{transform:scale(.92);}
+
+.title-main{
+  font-size:30px; font-weight:700; letter-spacing:.5px; margin:0;
+  white-space:nowrap; line-height:1.05; cursor:pointer;
+}
+.title-main:hover{opacity:.85;}
+.title-sub{
+  font-size:13px; color:var(--dim); margin-top:4px; white-space:nowrap;
+  letter-spacing:.4px;
+}
+.title-wrap{min-width:0;}
+
+/* 日/周/月 分段控件 */
+.seg{
+  display:flex; align-items:center; padding:3px; gap:2px;
+  background:var(--glass-2); border:1px solid var(--line); border-radius:11px;
+}
+.seg button{
+  min-width:34px; height:26px; border:0; cursor:pointer; border-radius:8px;
+  background:transparent; color:var(--dim);
+  font-family:var(--font); font-size:13.5px; transition:.18s;
+}
+.seg button:hover{color:var(--text);}
+.seg button.on{
+  background:var(--text); color:var(--invert); font-weight:700;
+  box-shadow:0 2px 8px rgba(0,0,0,.22);
+}
+
+.live-dot{
+  width:7px; height:7px; border-radius:50%; background:#4cd964;
+  box-shadow:0 0 8px rgba(76,217,100,.9); margin:0 2px;
+}
+
+.icon-btn{
+  width:30px; height:30px; border-radius:9px; cursor:pointer;
+  background:transparent; border:1px solid transparent; color:var(--dim);
+  display:grid; place-items:center; font-size:16px; transition:.18s;
+}
+.icon-btn:hover{background:var(--glass-2); border-color:var(--line); color:var(--text);}
+.icon-btn.on{background:var(--glass-3); border-color:var(--line-2); color:var(--text);}
+/* ================= 视图容器 ================= */
+.view{display:none; padding:6px 2px 0;}
+.view.on{display:block;}
+.scroll-y{max-height:min(52vh, 460px); overflow:auto;}
+:where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar{width:6px;height:6px;}
+:where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar-track{background:transparent;}
+:where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:999px;border:1px solid transparent;background-clip:padding-box;}
+:where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.34);}
+:where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar-button{display:none;width:0;height:0;}
+
+/* ---------- 日视图 ---------- */
+.hero{display:flex; align-items:center; gap:16px; padding:8px 6px 18px;}
+.big-num{
+  font-size:76px; font-weight:200; line-height:.86;
+  letter-spacing:-2px; font-variant-numeric:tabular-nums;
+}
+.hero-side{font-size:17px; line-height:1.55;}
+.hero-side .dim{color:var(--dim); font-size:15px;}
+
+.task-list{display:flex; flex-direction:column; gap:9px; padding-bottom:4px;}
+.task{
+  position:relative; display:flex; align-items:center; gap:12px;
+  padding:13px 14px 13px 18px; border-radius:14px;
+  background:var(--glass-2);
+  border:1px solid var(--line);
+  transition:background .18s, transform .18s, opacity .25s;
+  animation:pop .26s ease both;
+}
+@keyframes pop{from{opacity:0; transform:translateY(-4px);}to{opacity:1;transform:none;}}
+.task:hover{background:var(--glass-3);}
+.task::before{
+  content:""; position:absolute; left:7px; top:50%; transform:translateY(-50%);
+  width:3px; height:22px; border-radius:3px; background:var(--c);
+  box-shadow:0 0 10px -1px var(--c);
+}
+.check{
+  width:19px; height:19px; flex:0 0 auto; border-radius:50%; cursor:pointer;
+  background:transparent; border:1.6px solid var(--dim-2);
+  display:grid; place-items:center; color:var(--invert); font-size:12px;
+  transition:.18s;
+}
+.check:hover{border-color:var(--c);}
+.task.done .check{background:var(--c); border-color:var(--c);}
+.task.done .check::after{content:"✓"; color:#14141a; font-weight:700; font-size:12px; line-height:1;}
+.t-title{flex:1 1 auto; font-size:15px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.task.done .t-title{text-decoration:line-through; color:var(--dim-2);}
+.t-meta{display:flex; align-items:center; gap:10px; flex:0 0 auto; font-size:13px;}
+.t-time{color:var(--text); font-variant-numeric:tabular-nums; opacity:.92;}
+.t-cat{color:var(--c); font-weight:500;}
+.t-del, .t-edit{
+  position:absolute; top:50%; transform:translateY(-50%);
+  width:22px; height:22px; border-radius:50%; border:0; cursor:pointer;
+  background:rgba(255,255,255,.14); color:var(--text); font-size:13px; line-height:1;
+  opacity:0; transition:.18s;
+}
+.t-del{right:6px;}
+.t-edit{right:32px; font-size:12px;}
+.task:hover .t-del, .task:hover .t-edit{opacity:.85;}
+.t-del:hover{background:rgba(255,90,90,.8); color:#fff;}
+.t-edit:hover{background:rgba(255,255,255,.42); color:var(--invert);}
+
+.empty{padding:34px 8px; text-align:center; color:var(--dim-2); font-size:13.5px;}
+
+/* ---------- 新增待办 弹窗 ---------- */
+.modal-mask{
+  position:absolute; inset:0; z-index:60; border-radius:inherit;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(8,8,10,.46);
+  backdrop-filter:blur(7px) saturate(120%);
+  -webkit-backdrop-filter:blur(7px) saturate(120%);
+}
+.modal-mask.on{display:flex; animation:fade .18s ease both;}
+@keyframes fade{from{opacity:0;}to{opacity:1;}}
+.modal{
+  width:min(440px, 86%);
+  background:rgba(30,30,34,.95);
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:20px;
+  padding:24px 24px 18px;
+  box-shadow:0 30px 70px rgba(0,0,0,.5);
+  color:#fff; text-align:left;
+  animation:pop .22s ease both;
+}
+.modal h3{margin:0 0 18px; font-size:19px; font-weight:700; letter-spacing:.4px; color:#fff;}
+.m-field{margin-bottom:16px;}
+.m-field > label{display:block; font-size:13px; color:rgba(255,255,255,.6); margin-bottom:8px;}
+.m-input{
+  width:100%; height:46px; border-radius:12px; padding:0 14px;
+  background:rgba(255,255,255,.075); border:1px solid rgba(255,255,255,.10);
+  color:#fff; font-family:var(--font); font-size:14.5px; outline:0; transition:.18s;
+}
+.m-input::placeholder{color:rgba(255,255,255,.38);}
+.m-input:focus{border-color:rgba(255,255,255,.34); background:rgba(255,255,255,.1);}
+.m-input[type=date], .m-input[type=time]{color-scheme:dark;}
+.m-row2{display:flex; gap:12px;}
+.m-row2 .f-date{flex:1 1 58%; min-width:0;}
+.m-row2 .f-time{flex:1 1 42%; min-width:0;}
+.m-cats{display:flex; flex-wrap:wrap; gap:10px;}
+.type-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);}
+.type-seg button{height:36px;border:0;border-radius:9px;background:transparent;color:rgba(255,255,255,.64);font-family:var(--font);cursor:pointer;}
+.type-seg button.on{background:#fff;color:#14141a;font-weight:700;box-shadow:0 3px 12px rgba(0,0,0,.24);}
+.m-cat{
+  display:inline-flex; align-items:center; gap:8px;
+  border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.06);
+  color:rgba(255,255,255,.9); border-radius:999px; padding:8px 16px 8px 13px;
+  cursor:pointer; font-family:var(--font); font-size:13.5px; transition:.16s;
+}
+.m-cat:hover{background:rgba(255,255,255,.12);}
+.m-cat .m-dot{width:11px; height:11px; border-radius:50%; background:var(--c); flex:0 0 auto;}
+.m-cat.on{background:#fff; color:#14141a; border-color:#fff; font-weight:600;}
+.m-actions{display:flex; align-items:center; gap:10px; margin-top:6px;}
+.m-spacer{flex:1 1 auto;}
+.m-btn{border:0; cursor:pointer; font-family:var(--font); font-size:14px; border-radius:11px; padding:10px 20px; transition:.16s; background:transparent;}
+.m-cancel{color:var(--dim);}
+.m-cancel:hover{color:var(--text);}
+.m-ok{background:var(--text); color:var(--invert); font-weight:600;}
+.m-ok:hover{transform:translateY(-1px); box-shadow:0 6px 18px rgba(0,0,0,.34);}
+.m-del{color:#ff6b6b; padding:10px 14px;}
+.m-del:hover{background:rgba(255,107,107,.16);}
+
+/* ---------- 日 / 周时间网格 ---------- */
+.agenda-shell{display:grid;grid-template-columns:58px 1fr;max-height:min(58vh,540px);overflow:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.018);}
+.agenda-all{grid-column:1/-1;display:grid;grid-template-columns:58px 1fr;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:8;background:rgba(24,24,29,.72);backdrop-filter:blur(18px);}
+.agenda-shell.no-all .agenda-all{display:none;}
+.agenda-all-label{font-size:10px;color:var(--dim-2);padding:10px 7px;text-align:right;}
+.agenda-all-items{display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px;min-height:36px;border-left:1px solid var(--line);}
+.agenda-chip{font-size:12px;padding:5px 9px;border-radius:7px;background:color-mix(in srgb,var(--c) 28%,transparent);border-left:3px solid var(--c);cursor:pointer;}
+.time-rail{position:relative;height:calc(var(--hour-h) * 24);}
+.hour-label{position:absolute;right:8px;transform:translateY(-7px);font-size:10px;color:var(--dim-2);font-variant-numeric:tabular-nums;}
+.day-track{position:relative;height:calc(var(--hour-h) * 24);border-left:1px solid var(--line);background:repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--hour-h) - 1px),var(--line) calc(var(--hour-h) - 1px),var(--line) var(--hour-h));}
+.day-track::after{content:"单击新建 · 长按拖动创建时间段";position:sticky;top:8px;display:block;margin:8px;font-size:10px;color:var(--dim-2);opacity:0;pointer-events:none;transition:opacity .18s;}
+.day-track:hover::after{opacity:.7;}
+.time-block{position:absolute;left:8px;right:8px;min-height:42px;padding:6px 9px;border-radius:9px;background:color-mix(in srgb,var(--c) 32%,rgba(255,255,255,.06));border-left:3px solid var(--c);overflow:hidden;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.12);}
+.time-block.point-event{min-height:42px;border-radius:7px;background:color-mix(in srgb,var(--c) 42%,rgba(255,255,255,.08));padding-top:6px;padding-bottom:5px;}
+.time-block.point-event .tb-title{display:block;width:100%;}
+.time-block.point-event .tb-time{display:block;margin-top:3px;font-size:10px;color:var(--text);font-weight:650;}
+.time-block:hover{filter:brightness(1.12)}
+.time-block.done{opacity:.45;text-decoration:line-through}
+.time-block .tb-title{font-size:12.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.time-block .tb-time{font-size:10px;color:var(--dim);margin-top:2px;font-variant-numeric:tabular-nums}
+.now-line{position:absolute;left:0;right:0;height:1px;background:#ff6b6b;z-index:6;pointer-events:none;box-shadow:0 0 7px rgba(255,107,107,.8)}
+.now-line::before{content:"";position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:#ff6b6b}
+
+/* ---------- 周视图 ---------- */
+.wk-head{
+  display:grid; grid-template-columns:58px repeat(7,1fr); gap:0;
+  padding:6px 4px 12px; text-align:center;
+}
+.wk-head .wd{font-size:12.5px; color:var(--dim);}
+.wk-head .wn{
+  font-size:21px; font-weight:600; margin-top:5px; cursor:pointer;
+  display:inline-block; padding:2px 9px; border-radius:10px; transition:.18s;
+  font-variant-numeric:tabular-nums;
+}
+.wk-head .cell:hover .wn{background:var(--glass-2);}
+.wk-head .cell.today .wn{background:var(--text); color:var(--invert);}
+.wk-head .cell.today .wd{color:var(--text);}
+.wk-grid{display:grid;grid-template-columns:58px repeat(7,1fr);max-height:min(58vh,540px);overflow:auto;border:1px solid var(--line);border-radius:14px;}
+.wk-rail{position:relative;height:calc(var(--hour-h) * 24);}
+.wk-col{position:relative;height:calc(var(--hour-h) * 24);min-width:0;border-left:1px solid var(--line);background:repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--hour-h) - 1px),var(--line) calc(var(--hour-h) - 1px),var(--line) var(--hour-h));}
+.wk-untimed{position:sticky;top:0;z-index:7;min-height:34px;padding:4px;border-bottom:1px solid var(--line);background:rgba(24,24,29,.76);backdrop-filter:blur(18px);}
+.wk-all-event{font-size:10px;line-height:1.3;padding:4px 6px;margin-bottom:3px;border-radius:6px;background:color-mix(in srgb,var(--c) 28%,transparent);border-left:3px solid var(--c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;}
+.wk-all-event.done{opacity:.45;text-decoration:line-through;}
+.wk-col::after{content:"单击新建 · 长按拖动创建时间段";position:sticky;top:6px;display:block;margin:6px;font-size:9px;color:var(--dim-2);opacity:0;pointer-events:none;transition:opacity .18s;}
+.wk-col:hover::after{opacity:.7;}
+.drag-preview{position:absolute;left:4px;right:4px;z-index:20;border-radius:8px;border:1px solid rgba(127,200,255,.9);background:rgba(78,155,245,.28);box-shadow:0 0 0 1px rgba(255,255,255,.08) inset;pointer-events:none;padding:5px;color:#fff;font-size:10px;}
+.pill{
+  position:absolute;left:4px;right:4px;font-size:11px;line-height:1.25;
+  min-height:42px;padding:7px 9px 7px 13px; border-radius:10px;
+  background:var(--glass-2); border:1px solid var(--line);
+  overflow:hidden; text-overflow:ellipsis;
+  cursor:pointer; transition:.18s; animation:pop .24s ease both;
+}
+.pill::before{
+  content:""; position:absolute; left:4px; top:50%; transform:translateY(-50%);
+  width:4px; height:4px; border-radius:50%; background:var(--c);
+}
+.pill:hover{background:var(--glass-3); transform:translateY(-1px);}
+.pill.done{opacity:.45; text-decoration:line-through;}
+.pill .pt{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pill .pt-time{display:block;margin-top:3px;font-size:9px;color:var(--dim);font-weight:650;white-space:nowrap;}
+.pill.point-event{min-height:42px;padding-top:6px;padding-bottom:5px;}
+.pill.point-event .pt-time{color:var(--text);}
+.long-pressing{outline:2px solid rgba(127,200,255,.82);outline-offset:1px;filter:brightness(1.12);}
+
+/* ---------- 月视图 ---------- */
+.mo-weekdays{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;padding:0 4px 7px;color:var(--dim);font-size:11px;text-align:center;}
+.mo-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; padding-bottom:4px;}
+.mo-cell{
+  min-height:88px; min-width:0; overflow:hidden; padding:7px 7px 6px; border-radius:12px;
+  cursor:pointer; transition:background .18s; position:relative;
+}
+.mo-cell:hover{background:rgba(255,255,255,.05);}
+.mo-cell.out{opacity:.34;}
+.mo-wd{font-size:10.5px; color:var(--dim-2);}
+.mo-top{display:flex; align-items:baseline; gap:4px; margin:2px 0 5px;}
+.mo-num{
+  font-size:16.5px; font-weight:600; font-variant-numeric:tabular-nums;
+  display:inline-block; min-width:22px; height:22px; line-height:22px; text-align:center;
+  border-radius:50%; padding:0 1px;
+}
+.mo-cell.today .mo-num{background:var(--text); color:var(--invert);}
+.mo-lunar{font-size:10.5px; color:var(--dim-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.mo-lunar.fest{color:#ff6b6b; opacity:1;}
+.mo-task{
+  font-size:10.5px;line-height:1.35;color:var(--text);padding:2px 4px;margin-top:2px;border-radius:4px;
+  display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:color-mix(in srgb,var(--c) 25%,transparent);
+}
+.mo-task i{
+  width:5px; height:5px; border-radius:50%; background:var(--c); flex:0 0 auto;
+}
+.mo-more{font-size:10.5px; color:var(--dim-2); padding-left:9px; margin-top:1px;}
+
+/* ================= 底部分类图例 ================= */
+.legend{
+  display:flex; align-items:center; flex-wrap:wrap; gap:20px;
+  padding:14px 8px 2px; border-top:1px solid var(--line); margin-top:12px;
+  font-size:13px;
+}
+.lg{display:flex; align-items:center; gap:7px; cursor:pointer; transition:opacity .18s;}
+.lg.off{opacity:.34;}
+.lg .dot{
+  width:14px; height:14px; border-radius:50%; background:var(--c);
+  display:grid; place-items:center; color:#14141a; font-size:9px; font-weight:800;
+  box-shadow:0 0 10px -2px var(--c);
+}
+.lg .dot::after{content:"✓"; opacity:1;}
+.lg.off .dot::after{opacity:0;}
+
+/* ---------- 鱼骨时间轴（全部待办） ---------- */
+#viewFish{position:relative; max-height:min(76vh,760px); min-height:min(66vh,650px); overflow:auto;}
+#viewFish::-webkit-scrollbar{width:6px;}
+#viewFish::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18); border-radius:3px;}
+.fish-head{display:flex; align-items:center; justify-content:flex-end; padding:4px 6px 12px; gap:12px;}
+.fish-head .fh-t{font-size:15px; font-weight:600;}
+.fish-head .fh-s{font-size:12.5px; color:var(--dim);}
+.fish-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:28px;align-items:start;}
+.fish-nav{position:sticky;top:0;max-height:calc(min(76vh,760px) - 42px);overflow:auto;padding:16px 18px;border:1px solid var(--line);border-radius:16px;background:var(--glass-2);backdrop-filter:blur(16px);}
+.fish-nav-title{font-size:12px;color:var(--dim);margin-bottom:10px;}
+.fish-nav button{display:block;width:100%;border:0;background:transparent;color:var(--dim);font-family:var(--font);text-align:left;cursor:pointer;border-radius:7px;padding:5px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fish-nav button:hover{background:var(--glass-3);color:var(--text);}
+.fish-nav .fish-year{font-size:17px;font-weight:750;color:var(--text);margin-top:8px;}
+.fish-nav .fish-month{font-size:15px;font-weight:650;padding-left:15px;}
+.fish-nav .fish-date-link{font-size:13px;padding:7px 7px 7px 27px;}
+.fish-content{min-width:0;}
+.fish-day{scroll-margin-top:8px;margin-bottom:42px;}
+.fish-date-head{display:flex;align-items:flex-end;gap:12px;padding:8px 8px 12px;border-bottom:1px solid var(--line-2);margin-bottom:5px;}
+.fish-date-num{font-size:54px;font-weight:220;line-height:.82;letter-spacing:-2px;font-variant-numeric:tabular-nums;}
+.fish-date-copy{font-size:14px;font-weight:700;line-height:1.35;}
+.fish-date-copy span{display:block;font-size:11px;font-weight:400;color:var(--dim);margin-top:2px;}
+.fish{position:relative; padding:6px 4px 10px;}
+.fish-axis{position:absolute; left:50%; top:8px; bottom:14px; width:2px; transform:translateX(-50%);
+  background:linear-gradient(180deg, var(--line-2), transparent); border-radius:2px;}
+.fish-item{position:relative; width:50%; min-height:92px; padding:14px 38px; box-sizing:border-box; animation:pop .26s ease both;}
+.fish-item.left{left:0; text-align:right;}
+.fish-item.right{left:50%; text-align:left;}
+.fish-node{position:absolute; top:20px; width:12px; height:12px; border-radius:50%;
+  background:var(--c); box-shadow:0 0 0 4px var(--glass), 0 0 12px -1px var(--c);}
+.fish-item.left .fish-node{right:-6px;}
+.fish-item.right .fish-node{left:-6px;}
+.fish-item.left::after, .fish-item.right::after{content:""; position:absolute; top:25px; width:24px; height:2px; background:var(--c); opacity:.6;}
+.fish-item.left::after{right:6px;}
+.fish-item.right::after{left:6px;}
+.fish-card{display:inline-block; text-align:left; min-width:190px; max-width:100%; position:relative;
+  padding:16px 18px; border-radius:15px; background:var(--glass-2); border:1px solid var(--line);
+  cursor:pointer; transition:.18s; vertical-align:top;}
+.fish-card:hover{background:var(--glass-3); transform:translateY(-1px);}
+.fish-card .fc-date{font-size:11.5px; color:var(--dim-2); margin-bottom:4px;}
+.fish-card .fc-title{font-size:16px; line-height:1.4; padding-right:38px;word-break:break-word;}
+.fish-card.done .fc-title{text-decoration:line-through; color:var(--dim-2);}
+.fish-card .fc-meta{display:flex; align-items:center; gap:10px; margin-top:10px; font-size:14px;}
+.fish-card .fc-time{color:var(--text); opacity:.9;}
+.fish-card .fc-cat{color:var(--c); font-weight:500;}
+.fish-card .fc-del, .fish-card .fc-edit{position:absolute; top:8px; width:20px; height:20px; border-radius:50%;
+  border:0; background:rgba(255,255,255,.14); color:var(--text); cursor:pointer; font-size:12px; line-height:1;}
+.fish-card .fc-del{right:8px;}
+.fish-card .fc-edit{right:32px;}
+.fish-card .fc-del:hover{background:rgba(255,90,90,.8); color:#fff;}
+.fish-card .fc-edit:hover{background:rgba(255,255,255,.42); color:var(--invert);}
+@media(max-width:700px){#viewFish{min-height:min(62vh,600px)}.fish-layout{grid-template-columns:138px minmax(0,1fr);gap:10px}.fish-nav{padding:10px}.fish-date-num{font-size:42px}.fish-item{padding-left:22px;padding-right:22px}.fish-card{min-width:150px}}
+/* ================= 设置面板 ================= */
+.settings{
+  position:absolute; right:26px; top:74px; width:330px; z-index:20;
+  border-radius:20px; padding:18px 18px 16px;
+  background:rgba(22,22,26,.86);
+  backdrop-filter:blur(26px) saturate(140%);
+  -webkit-backdrop-filter:blur(26px) saturate(140%);
+  border:1px solid rgba(255,255,255,.13);
+  box-shadow:0 26px 60px rgba(0,0,0,.45);
+  color:#fff; font-size:13.5px;
+  max-height:calc(100vh - 140px); overflow:auto;
+}
+.settings.hidden{display:none;}
+.settings::-webkit-scrollbar{width:6px;}
+.settings::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2); border-radius:3px;}
+.set-sec{margin-bottom:18px;}
+.set-sec:last-child{margin-bottom:4px;}
+.set-title{font-size:13px; color:rgba(255,255,255,.55); margin-bottom:10px; letter-spacing:.6px;}
+.row{display:flex; align-items:center; gap:10px; margin-bottom:9px;}
+.row .lb{width:64px; flex:0 0 auto; color:rgba(255,255,255,.92);}
+.row .val{width:52px; text-align:right; flex:0 0 auto; color:rgba(255,255,255,.75); font-variant-numeric:tabular-nums; font-size:12.5px;}
+
+input[type=range]{
+  -webkit-appearance:none; appearance:none; flex:1 1 auto; height:22px; background:transparent; cursor:pointer;
+}
+input[type=range]::-webkit-slider-runnable-track{
+  height:3px; border-radius:3px; background:rgba(255,255,255,.26);
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none; width:15px; height:15px; border-radius:50%;
+  background:#fff; margin-top:-6px; box-shadow:0 1px 5px rgba(0,0,0,.4);
+}
+
+.chip{
+  border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.07);
+  color:rgba(255,255,255,.88); border-radius:10px; padding:6px 13px;
+  cursor:pointer; font-family:var(--font); font-size:13px; transition:.18s;
+}
+.chip:hover{background:rgba(255,255,255,.14);}
+.chip.on{background:#fff; color:#14141a; font-weight:600; border-color:#fff;}
+
+.chk{display:flex; align-items:center; gap:10px; margin-bottom:10px; cursor:pointer;}
+.box{
+  width:19px; height:19px; flex:0 0 auto; border-radius:5px;
+  border:1.5px solid rgba(255,255,255,.4); display:grid; place-items:center;
+  font-size:12px; color:#14141a; transition:.18s;
+}
+.chk.on .box{background:#fff; border-color:#fff;}
+.chk.on .box::after{content:"✓"; font-weight:800;}
+
+.cat-row{display:flex; align-items:center; gap:10px; padding:7px 0;}
+.cdot{width:16px; height:16px; border-radius:50%; flex:0 0 auto; cursor:pointer;}
+.cat-row .nm{flex:1 1 auto;}
+.cat-row .ct{color:rgba(255,255,255,.5); font-size:12.5px;}
+.cat-row .cx{
+  border:0; background:transparent; color:rgba(255,255,255,.45); cursor:pointer;
+  font-size:14px; padding:0 2px;
+}
+.cat-row .cx:hover{color:#ff6b6b;}
+
+.cat-add{display:flex; align-items:center; gap:9px; margin-top:8px;}
+.cat-add input{
+  flex:1 1 auto; min-width:50px; background:rgba(255,255,255,.07);
+  border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:9px 11px;
+  color:#fff; font-family:var(--font); font-size:13px; outline:0;
+}
+.cat-add input::placeholder{color:rgba(255,255,255,.35);}
+.cat-add button{
+  border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.07);
+  color:#fff; border-radius:10px; padding:9px 14px; cursor:pointer;
+  font-family:var(--font); font-size:13px;
+}
+.exp{display:flex; gap:9px; flex-wrap:wrap;}
+
+/* 提示条 */
+.toast{
+  position:fixed; left:50%; bottom:34px; transform:translate(-50%,14px);
+  background:rgba(20,20,24,.9); border:1px solid rgba(255,255,255,.16);
+  color:#fff; font-size:13px; padding:9px 16px; border-radius:11px;
+  opacity:0; pointer-events:none; transition:.24s; z-index:80;
+  backdrop-filter:blur(14px);
+}
+.toast.on{opacity:1; transform:translate(-50%,0);}
+</style>
+</head>
+<body>
+
+<div id="wall"></div>
+
+<div id="stage">
+  <section class="board" id="board">
+    <div class="window-drag-edge" aria-hidden="true"></div>
+    <header class="head" id="head">
+      <div class="head-left">
+        <button class="nav-btn" id="prevBtn" title="上一个">‹</button>
+        <div class="title-wrap">
+          <h1 class="title-main" id="titleMain">9月9日</h1>
+          <div class="title-sub" id="titleSub">星期三 · 廿八</div>
+        </div>
+        <button class="nav-btn" id="nextBtn" title="下一个">›</button>
+      </div>
+      <div class="head-right">
+        <div class="seg" id="seg">
+          <button data-view="day" class="on">日</button>
+          <button data-view="week">周</button>
+          <button data-view="month">月</button>
+        </div>
+        <span class="live-dot" title="本地自动保存已开启"></span>
+        <button class="icon-btn" id="fishBtn" title="全部待办 · 鱼骨时间轴">☰</button>
+        <button class="icon-btn" id="addBtn" title="新建任务">＋</button>
+        <button class="icon-btn" id="gearBtn" title="设置">⚙</button>
+        <button class="win-btn pin" id="pinBtn" title="窗口置顶（Ctrl+T）">📌</button>
+        <button class="win-btn compact" id="compactBtn" title="缩小为便签（今日日程）">▢</button>
+        <button class="win-btn close" id="closeBtn" title="关闭">×</button>
+      </div>
+    </header>
+
+    <main class="view on" id="viewDay">
+      <div class="hero">
+        <div class="big-num" id="heroNum">9</div>
+        <div class="hero-side">
+          <div id="heroWd">星期三</div>
+          <div class="dim" id="heroLunar">廿八</div>
+        </div>
+      </div>
+      <div id="dayList"></div>
+    </main>
+
+    <main class="view" id="viewWeek">
+      <div class="wk-head" id="wkHead"></div>
+      <div class="wk-grid scroll-y" id="wkGrid"></div>
+    </main>
+
+    <main class="view" id="viewMonth">
+      <div class="mo-weekdays"><span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>周日</span></div>
+      <div class="mo-grid" id="moGrid"></div>
+    </main>
+
+    <main class="view" id="viewFish"></main>
+
+    <footer class="legend" id="legend"></footer>
+    <div class="resize" id="resize" title="拖动调整宽度"></div>
+
+    <div class="modal-mask" id="modalMask">
+      <div class="modal" id="modal">
+        <h3 id="mHead">新增待办</h3>
+        <div class="m-field">
+          <label>内容</label>
+          <input class="m-input" id="mTitle" placeholder="要做点什么..." maxlength="40" />
+        </div>
+        <div class="m-field">
+          <label>日程类型</label>
+          <div class="type-seg" id="mType"><button type="button" data-kind="point">时间点</button><button type="button" data-kind="range">时间段</button><button type="button" data-kind="allDay">全天</button></div>
+        </div>
+        <div class="m-row2">
+          <div class="m-field f-date">
+            <label>日期</label>
+            <input class="m-input" id="mDate" type="date" />
+          </div>
+          <div class="m-field f-time" id="mTimeWrap">
+            <label id="mStartLabel">时间</label>
+            <input class="m-input" id="mTime" type="time" step="900" />
+          </div>
+        </div>
+        <div class="m-field" id="mEndWrap">
+          <label>结束时间</label>
+          <input class="m-input" id="mEnd" type="time" step="900" />
+        </div>
+        <div class="m-field">
+          <label>分类</label>
+          <div class="m-cats" id="mCats"></div>
+        </div>
+        <div class="m-field">
+          <label>完成状态</label>
+          <div class="chk" id="mDone"><span class="box"></span><span>已完成</span></div>
+        </div>
+        <div class="m-actions">
+          <button class="m-btn m-del" id="mDel" style="display:none">删除</button>
+          <span class="m-spacer"></span>
+          <button class="m-btn m-cancel" id="mCancel">取消</button>
+          <button class="m-btn m-ok" id="mOk">添加</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="settings hidden" id="settings">    <div class="set-sec">
+      <div class="set-title">尺寸</div>
+      <div class="row">
+        <span class="lb">宽度</span>
+        <input type="range" id="rWidth" min="480" max="1400" step="10" value="860" />
+        <span class="val" id="vWidth">860</span>
+      </div>
+      <div class="row">
+        <span class="lb">整体缩放</span>
+        <input type="range" id="rScale" min="70" max="200" step="5" value="100" />
+        <span class="val" id="vScale">100%</span>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">外观</div>
+      <div class="row">
+        <span class="lb">透明度</span>
+        <input type="range" id="rAlpha" min="0" max="100" step="1" value="72" />
+        <span class="val" id="vAlpha">72%</span>
+      </div>
+      <div class="row">
+        <span class="lb">毛玻璃</span>
+        <input type="range" id="rBlur" min="0" max="80" step="1" value="38" />
+        <span class="val" id="vBlur">38px</span>
+      </div>
+      <div class="row">
+        <span class="lb">文字颜色</span>
+        <button class="chip on" data-text="light">亮色字</button>
+        <button class="chip" data-text="dark">暗色字</button>
+      </div>
+      <!-- 背景固定为「桌面透明」，已移除自带壁纸选项（风景/夜色会造成遮挡桌面） -->
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">显示</div>
+      <!-- 「勾选完成后隐藏该条」已移除：完成的任务保持可见 -->
+      <div class="chk on" id="ckMonth"><span class="box"></span>月视图日期下列出任务</div>
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">窗口</div>
+      <div class="chk" id="ckTop"><span class="box"></span>窗口置顶（Ctrl+T）</div>
+      <div class="chk on" id="ckFit"><span class="box"></span>窗口紧贴看板（不挡桌面点击）</div>
+      <div class="chk" id="ckAuto"><span class="box"></span>开机自动启动</div>
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">提醒 / 备份</div>
+      <div class="chk on" id="ckRemind"><span class="box"></span>到点提醒（系统通知）</div>
+      <div class="chk on" id="ckSound"><span class="box"></span>完成提示音</div>
+      <div class="chk on" id="ckBackup"><span class="box"></span>每日自动备份（保留 7 份）</div>
+      <div class="exp" style="margin-top:8px">
+        <button class="chip" id="testRemindBtn">测试提醒</button>
+        <button class="chip" id="backupDirBtn">打开备份文件夹</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">分类</div>
+      <div id="catList"></div>
+      <div class="cat-add">
+        <input id="catName" placeholder="新分类名称" maxlength="8" />
+        <span class="cdot" id="catColorPick" title="点击换颜色"></span>
+        <button id="catAddBtn">添加</button>
+      </div>
+    </div>
+
+    <div class="set-sec">
+      <div class="set-title">导出</div>
+      <div class="exp">
+        <button class="chip" data-exp="json">JSON</button>
+        <button class="chip" data-exp="csv">CSV</button>
+        <button class="chip" data-exp="ics">日历 .ics</button>
+      </div>
+    </div>
+    <div class="set-sec">
+      <div class="set-title">数据</div>
+      <div class="exp">
+        <button class="chip" id="impBtn">导入 JSON</button>
+        <button class="chip" data-exp="sample">载入示例</button>
+        <button class="chip" id="clearAll">清空全部</button>
+      </div>
+      <input type="file" id="impFile" accept=".json,application/json" style="display:none" />
+    </div>
+</aside>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+/* ============================================================
+   毛玻璃日程看板 —— 纯前端 · 零依赖 · 本地存储
+   ============================================================ */
+const KEY = "mochi-board-v1";
+const PALETTE = ["#4E9BF5","#4CD98A","#F0B429","#F0736F","#A98BF5","#3FD0C9","#F58EC0","#C8A26B"];
+const WD_CN = ["周日","周一","周二","周三","周四","周五","周六"];
+const WD_S  = ["日","一","二","三","四","五","六"];   // 索引 = getDay()，与上面同序
+const MONTH_CN = ["","正月","二月","三月","四月","五月","六月","七月","八月","九月","十月","冬月","腊月"];
+const DAY_CN = ["","初一","初二","初三","初四","初五","初六","初七","初八","初九","初十",
+  "十一","十二","十三","十四","十五","十六","十七","十八","十九","二十",
+  "廿一","廿二","廿三","廿四","廿五","廿六","廿七","廿八","廿九","三十"];
+/* 公历固定节日（月-日）*/
+const FEST = {
+  "01-01":"元旦","02-14":"情人节","03-08":"妇女节","03-12":"植树节","04-01":"愚人节",
+  "05-01":"劳动节","05-04":"青年节","06-01":"儿童节","07-01":"建党节","08-01":"建军节",
+  "09-10":"教师节","10-01":"国庆节","12-24":"平安夜","12-25":"圣诞节"
+};
+/* 农历节日（月-日）*/
+const LUNAR_FEST = { "1-1":"春节","1-15":"元宵","5-5":"端午","7-7":"七夕","8-15":"中秋","9-9":"重阳","12-8":"腊八" };
+
+/* ---------------- 状态 ---------------- */
+let state = {
+  cats: [
+    { id:"work",  name:"工作", color:"#4E9BF5" },
+    { id:"life",  name:"生活", color:"#4CD98A" },
+    { id:"study", name:"学习", color:"#F0B429" },
+    { id:"health",name:"健康", color:"#F0736F" }
+  ],
+  tasks: {},          // { "2026-09-17": [ {id,title,time,cat,done} ] }
+  hiddenCats: [],     // 图例里被取消勾选的分类
+  view: "day",
+  cfg: { width:860, height:0, scale:100, alpha:72, blur:38, text:"light", bg:"none", hideDone:false, monthTask:true, pin:false, fit:true, remind:true, sound:true, autoBackup:true },
+  catColorPick: "#A98BF5"
+};
+let cursor = new Date();           // 当前浏览的日期
+let addTargetKey = null;           // 快捷新增任务落到的日期
+
+/* ---------------- 工具 ---------------- */
+const $  = (s, r) => {
+  const root = r || document;
+  return /^[.#\[]/.test(s) || s.indexOf(" ") > -1 ? root.querySelector(s) : root.querySelector("#" + s);
+};
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const pad = n => String(n).padStart(2, "0");
+const key = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const parseKey = s => { const a = s.split("-").map(Number); return new Date(a[0], a[1]-1, a[2]); };
+const startOfWeek = d => { const x = new Date(d); const w = (x.getDay() + 6) % 7; x.setDate(x.getDate() - w); x.setHours(0,0,0,0); return x; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const sameDay = (a, b) => a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+/* 农历：优先使用浏览器原生中国农历日历 */
+let lunarFmt = null;
+try { lunarFmt = new Intl.DateTimeFormat("zh-CN-u-ca-chinese", { month:"numeric", day:"numeric" }); } catch(e){}
+function lunarOf(d){
+  let m = 0, day = 0;
+  if (lunarFmt){
+    try{
+      lunarFmt.formatToParts(d).forEach(p => {
+        if (p.type === "month") m = parseInt(p.value, 10) || 0;
+        if (p.type === "day")   day = parseInt(p.value, 10) || 0;
+      });
+    }catch(e){}
+  }
+  if (!m || !day) return { text:"", fest:"" };
+  const text = (DAY_CN[day] || "") ;
+  const fest = LUNAR_FEST[m + "-" + day] || "";
+  return { text, fest, month:m, day };
+}
+function festOf(d){
+  const s = pad(d.getMonth()+1) + "-" + pad(d.getDate());
+  const l = lunarOf(d);
+  return FEST[s] || l.fest || "";
+}
+/* 农历文案：初一显示「七月初一」，其余只显示日名（廿八），与界面一致 */
+function lunarLabel(d){
+  const l = lunarOf(d);
+  if (!l.month) return "";
+  return l.day === 1 ? (MONTH_CN[l.month] + "初一") : l.text;
+}
+
+/* ---------------- 存储 ---------------- */
+function save(){
+  try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
+}
+function load(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if (raw){
+      const o = JSON.parse(raw);
+      state = Object.assign(state, o);
+      state.cfg = Object.assign({ width:860, height:0, scale:100, alpha:72, blur:38, text:"light", bg:"none", hideDone:false, monthTask:true, pin:false, fit:true, remind:true, sound:true, autoBackup:true }, o.cfg || {});
+      // 强制：不自动隐藏已完成任务；默认无自身背景（桌面透明）
+      state.cfg.hideDone = false;
+      state.cfg.bg = "none";
+      if (!Array.isArray(state.cats) || !state.cats.length) state.cats = [];
+      if (!Array.isArray(state.hiddenCats)) state.hiddenCats = [];
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+/* ---------------- 示例数据 ---------------- */
+function seed(){
+  const mon = startOfWeek(new Date());
+  const t = (off, title, time, cat) => ({ id:uid(), title, time:time||"", cat, done:false });
+  const m = {};
+  const put = (off, arr) => { m[key(addDays(mon, off))] = arr; };
+  put(0, [ t(0,"季度 OKR 评审材料","","work"), t(0,"从 Mac 同步过来的待办","","work"),
+           t(0,"夜跑 5 公里","20:30","health"), t(0,"《三体》第三章","","study"), t(0,"87654","","work") ]);
+  put(1, [ t(0,"英语晨读","07:30","study"), t(0,"新","","work") ]);
+  put(2, [ t(0,"PRD 评审会","10:00","work"), t(0,"缴物业费","","life") ]);
+  put(4, [ t(0,"体检预约","09:00","health") ]);
+  put(5, [ t(0,"团队晚餐","18:30","life") ]);
+  put(3, [ t(0,"周报汇总","17:00","work"), t(0,"晨间冥想","07:00","health") ]);
+  state.tasks = Object.assign(state.tasks || {}, m);
+}
+/* ============================================================
+   渲染
+   ============================================================ */
+const catById = id => state.cats.find(c => c.id === id) || { name:"未分类", color:"#8a8a95", id:"none" };
+const catVisible = id => state.hiddenCats.indexOf(id) < 0;
+
+function tasksOf(d){
+  const list = (state.tasks[key(d)] || []).slice();
+  list.sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+  return list.filter(t => catVisible(t.cat));
+}
+
+function renderTitle(){
+  const dm = $("titleMain"), ds = $("titleSub");
+  if (state.view === "day"){
+    dm.textContent = (cursor.getMonth() + 1) + "月" + cursor.getDate() + "日";
+    const l = lunarOf(cursor);
+    ds.textContent = WD_CN[cursor.getDay()] + (l.text ? " · " + l.text : "");
+  } else if (state.view === "week"){
+    const s = startOfWeek(cursor), e = addDays(s, 6);
+    dm.textContent = (s.getMonth() + 1) + "月";
+    ds.textContent = s.getDate() + "日 – " + (e.getMonth() + 1) + "月" + e.getDate() + "日";
+  } else if (state.view === "fish"){
+    dm.textContent = "全部待办";
+    ds.textContent = "";
+  } else {
+    dm.textContent = (cursor.getMonth() + 1) + "月";
+    ds.textContent = cursor.getFullYear() + "年 · 点击日期查看当天";
+  }
+  ds.style.display = state.view === "fish" ? "none" : "";
+}
+
+/* ---------- 日视图 ---------- */
+function renderDay(){
+  const today = new Date();
+  $("heroNum").textContent = cursor.getDate();
+  $("heroWd").textContent = WD_CN[cursor.getDay()];
+  const l = lunarOf(cursor), f = festOf(cursor);
+  $("heroLunar").textContent = (f ? f + " · " : "") + (l.month ? lunarLabel(cursor) : "");
+
+  const box = $("dayList"); box.innerHTML = "";
+  box.classList.toggle("scroll-y", !!state.compact);
+  addTargetKey = key(cursor);
+  let list = tasksOf(cursor);
+  if (state.cfg.hideDone) list = list.filter(t => !t.done);
+
+  if (state.compact){
+    const cards = document.createElement("div");
+    cards.className = "task-list";
+    list.slice().sort((a,b)=>(a.time||"").localeCompare(b.time||"")).forEach(t=>{
+      const row = taskRow(t, cursor);
+      const meta = row.querySelector(".t-meta");
+      let time = row.querySelector(".t-time");
+      if (!time){time=document.createElement("span");time.className="t-time";meta.prepend(time);}
+      time.textContent = kindOf(t)==="allDay" ? "全天" : kindOf(t)==="range" ? t.time+"–"+minutesToTime(eventSpan(t).end) : t.time;
+      cards.appendChild(row);
+    });
+    if (!list.length){const empty=document.createElement("div");empty.className="empty";empty.textContent="今天暂无待办";cards.appendChild(empty);}
+    box.appendChild(cards);
+    return;
+  }
+
+  const untimed = list.filter(t => kindOf(t) === "allDay"), timed = list.filter(t => kindOf(t) !== "allDay");
+  const shell = document.createElement("div"); shell.className = "agenda-shell";
+  shell.innerHTML = '<div class="agenda-all"><div class="agenda-all-label">全天</div><div class="agenda-all-items"></div></div><div class="time-rail"></div><div class="day-track"></div>';
+  const allBox = $(".agenda-all-items", shell), rail = $(".time-rail", shell), track = $(".day-track", shell);
+  track.dataset.date=key(cursor);
+  if (!untimed.length) shell.classList.add("no-all");
+  untimed.forEach(t => { const c=catById(t.cat), el=document.createElement("div"); el.className="agenda-chip"+(t.done?" done":""); el.style.setProperty("--c",c.color); el.textContent=t.title; el.dataset.date=key(cursor);el.dataset.id=t.id;allBox.appendChild(el); });
+  for(let h=0;h<24;h++){ const lb=document.createElement("span");lb.className="hour-label";lb.style.top=(h*54)+"px";lb.textContent=pad(h)+":00";rail.appendChild(lb); }
+  const layout=layoutTimed(timed);
+  timed.forEach(t => { const c=catById(t.cat), span=eventSpan(t), pos=layout.get(t.id)||{col:0,cols:1}, el=document.createElement("div"); el.className="time-block "+(kindOf(t)==="point"?"point-event ":"")+(t.done?"done":"");el.style.setProperty("--c",c.color);el.style.top=(span.start/60*54)+"px";el.style.height=Math.max(28,(span.end-span.start)/60*54-3)+"px";el.style.left="calc("+(pos.col*100/pos.cols)+"% + 7px)";el.style.width="calc("+(100/pos.cols)+"% - 11px)";el.style.right="auto";el.dataset.date=key(cursor);el.dataset.id=t.id;const label=kindOf(t)==="range"?t.time+"–"+minutesToTime(span.end):t.time;el.innerHTML='<div class="tb-title"></div><div class="tb-time">'+label+'</div>';$(".tb-title",el).textContent=t.title;track.appendChild(el); });
+  if(sameDay(cursor,today)){const mins=today.getHours()*60+today.getMinutes();const line=document.createElement("div");line.className="now-line";line.style.top=(mins/60*54)+"px";track.appendChild(line);}
+  box.appendChild(shell);
+  requestAnimationFrame(()=>{shell.scrollTop=Math.max(0,(new Date().getHours()-7)*54);});
+}
+
+const timeToMinutes = s => { const a=(s||"00:00").split(":").map(Number); return a[0]*60+a[1]; };
+const minutesToTime = n => pad(Math.floor(Math.max(0,Math.min(1439,n))/60))+":"+pad(Math.max(0,Math.min(1439,n))%60);
+const durationText = n => n<60?n+"分钟":((n/60)%1?n/60:""+n/60)+"小时";
+const kindOf = t => t.kind || (!t.time ? "allDay" : (t.end || t.duration ? "range" : "point"));
+function eventSpan(t){const start=timeToMinutes(t.time);let end=start+45;if(kindOf(t)==="range")end=t.end?timeToMinutes(t.end):start+(Number(t.duration)||60);return{start,end:Math.max(start+15,Math.min(1440,end))};}
+function layoutTimed(items){
+  const out=new Map(), sorted=items.slice().sort((a,b)=>eventSpan(a).start-eventSpan(b).start);let cluster=[],clusterEnd=-1;
+  const flush=()=>{if(!cluster.length)return;const ends=[];cluster.forEach(t=>{const s=eventSpan(t);let col=ends.findIndex(x=>x<=s.start);if(col<0)col=ends.length;ends[col]=s.end;out.set(t.id,{col,cols:0});});const cols=Math.max(1,ends.length);cluster.forEach(t=>out.get(t.id).cols=cols);cluster=[];};
+  sorted.forEach(t=>{const s=eventSpan(t);if(cluster.length&&s.start>=clusterEnd){flush();clusterEnd=-1;}cluster.push(t);clusterEnd=Math.max(clusterEnd,s.end);});flush();return out;
+}
+
+function taskRow(t, d){
+  const c = catById(t.cat);
+  const el = document.createElement("div");
+  el.className = "task" + (t.done ? " done" : "");
+  el.style.setProperty("--c", c.color);
+  el.innerHTML =
+    '<button class="check" data-act="toggle" title="完成"></button>' +
+    '<span class="t-title"></span>' +
+    '<span class="t-meta">' + (t.time ? '<span class="t-time">' + t.time + "</span>" : "") +
+      '<span class="t-cat"></span></span>' +
+    '<button class="t-edit" data-act="edit" title="编辑">✎</button>' +
+    '<button class="t-del" data-act="del" title="删除">×</button>';
+  $(".t-title", el).textContent = t.title;
+  $(".t-cat", el).textContent = c.name;
+  el.dataset.id = t.id;
+  el.dataset.date = key(d);
+  return el;
+}
+
+/* ---------- 周视图 ---------- */
+function renderWeek(){
+  const s = startOfWeek(cursor), today = new Date();
+  const hd = $("wkHead"), gd = $("wkGrid");
+  hd.innerHTML = '<div></div>'; gd.innerHTML = '<div class="wk-rail"></div>';
+  const rail=$(".wk-rail",gd);for(let h=0;h<24;h++){const lb=document.createElement("span");lb.className="hour-label";lb.style.top=(h*54)+"px";lb.textContent=pad(h)+":00";rail.appendChild(lb);}
+  for (let i = 0; i < 7; i++){
+    const d = addDays(s, i);
+    const cell = document.createElement("div");
+    cell.className = "cell" + (sameDay(d, today) ? " today" : ""); cell.tabIndex=0;
+    cell.innerHTML = '<div class="wd">' + WD_CN[d.getDay()] + '</div>' +
+                     '<div class="wn">' + d.getDate() + "</div>";
+    cell.dataset.date = key(d);
+    hd.appendChild(cell);
+  }
+  for (let i = 0; i < 7; i++){
+    const d = addDays(s, i);
+    const col = document.createElement("div");
+    col.className = "wk-col";
+    col.dataset.date = key(d);
+    let list = tasksOf(d);
+    if (state.cfg.hideDone) list = list.filter(t => !t.done);
+    const timed=list.filter(t=>kindOf(t)!=="allDay"), weekLayout=layoutTimed(timed);
+    timed.forEach(t => {
+      const c = catById(t.cat);
+      const p = document.createElement("div");
+      p.className = "pill " + (kindOf(t)==="point"?"point-event ":"") + (t.done ? "done" : "");
+      p.style.setProperty("--c", c.color);
+      const span=eventSpan(t),pos=weekLayout.get(t.id)||{col:0,cols:1};p.style.top=(span.start/60*54)+"px";p.style.height=Math.max(28,(span.end-span.start)/60*54-3)+"px";p.style.left="calc("+(pos.col*100/pos.cols)+"% + 3px)";p.style.width="calc("+(100/pos.cols)+"% - 5px)";p.style.right="auto";
+      p.innerHTML = '<span class="pt"></span><span class="pt-time">'+(kindOf(t)==="range"?t.time+'–'+minutesToTime(span.end):t.time)+'</span>';
+      $(".pt", p).textContent = t.title;
+      p.dataset.date = key(d); p.dataset.id = t.id;
+      col.appendChild(p);
+    });
+    const untimed=list.filter(t=>kindOf(t)==="allDay");if(untimed.length){const all=document.createElement("div");all.className="wk-untimed";untimed.forEach(t=>{const c=catById(t.cat),x=document.createElement("div");x.className="wk-all-event"+(t.done?" done":"");x.style.setProperty("--c",c.color);x.textContent=t.title;x.dataset.date=key(d);x.dataset.id=t.id;all.appendChild(x)});col.appendChild(all)}
+    if(sameDay(d,today)){const mins=today.getHours()*60+today.getMinutes();const line=document.createElement("div");line.className="now-line";line.style.top=(mins/60*54)+"px";col.appendChild(line)}
+    gd.appendChild(col);
+  }
+  requestAnimationFrame(()=>gd.scrollTop=Math.max(0,(new Date().getHours()-7)*54));
+}
+
+/* ---------- 月视图 ---------- */
+function renderMonth(){
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  const today = new Date();
+  const first = new Date(y, m, 1);
+  let day = startOfWeek(first);
+  const grid = $("moGrid");
+  grid.innerHTML = "";
+  // 周一~周日完整 7 列；整周都不在本月的行不显示
+  for (let w = 0; w < 6; w++){
+    const week = [];
+    for (let i = 0; i < 7; i++) week.push(addDays(day, w * 7 + i));
+    if (!week.some(d => d.getMonth() === m && d.getFullYear() === y)) continue;
+    week.forEach(d => {
+      const inMonth = d.getMonth() === m;
+      const cell = document.createElement("div");
+      cell.className = "mo-cell" + (inMonth ? "" : " out") + (sameDay(d, today) ? " today" : ""); cell.tabIndex=0;
+      cell.dataset.date = key(d);
+      const f = festOf(d);
+      let html =
+        '<div class="mo-top"><span class="mo-num">' + d.getDate() + "</span>" +
+          '<span class="mo-lunar' + (f ? " fest" : "") + '">' + (f || lunarLabel(d)) + "</span></div>";
+      if (state.cfg.monthTask){
+        let list = tasksOf(d);
+        if (state.cfg.hideDone) list = list.filter(t => !t.done);
+        list.slice(0, 3).forEach(t => {
+          const c = catById(t.cat);
+          html += '<div class="mo-task" style="--c:' + c.color + '"><i></i><span>' + (t.time?esc(t.time)+" ":"") + esc(t.title) + "</span></div>";
+        });
+        if (list.length > 3) html += '<div class="mo-more">还有 ' + (list.length - 3) + " 项…</div>";
+      }
+      cell.innerHTML = html;
+      grid.appendChild(cell);
+    });
+  }
+}
+
+/* ---------- 鱼骨时间轴（全部待办） ---------- */
+function renderFish(){
+  const box = $("viewFish");
+  let all = [];
+  Object.keys(state.tasks).sort().forEach(k => {
+    (state.tasks[k] || []).forEach(t => {
+      if (!catVisible(t.cat)) return;
+      all.push(Object.assign({ date: k }, t));
+    });
+  });
+  if (state.cfg.hideDone) all = all.filter(t => !t.done);
+  all.sort((a, b) => (a.date + (a.time || "99:99")).localeCompare(b.date + (b.time || "99:99")));
+  const total = all.length, done = all.filter(t => t.done).length;
+  let html = '<div class="fish-head">' +
+             '<div class="fh-s">共 ' + total + ' 项 · 已完成 ' + done + ' · 点卡片完成 / 删除</div></div>';
+  if (!total){ box.innerHTML = html + '<div class="empty">没有待办。点右上角 ＋ 新建一条</div>'; return; }
+  const dates=Array.from(new Set(all.map(t=>t.date)));
+  let nav='<aside class="fish-nav">',lastY="",lastM="";
+  dates.forEach(k=>{const d=parseKey(k),y=String(d.getFullYear()),m=y+"-"+pad(d.getMonth()+1);if(y!==lastY){nav+='<button class="fish-year" data-jump="'+k+'">'+y+'年</button>';lastY=y;lastM="";}if(m!==lastM){nav+='<button class="fish-month" data-jump="'+k+'">'+(d.getMonth()+1)+'月</button>';lastM=m;}nav+='<button class="fish-date-link" data-jump="'+k+'">'+pad(d.getMonth()+1)+'月'+pad(d.getDate())+'日 · '+WD_S[d.getDay()]+'</button>';});
+  nav+='</aside>';
+  html+='<div class="fish-layout">'+nav+'<div class="fish-content">';
+  dates.forEach(k=>{const d=parseKey(k),items=all.filter(t=>t.date===k);html+='<section class="fish-day" id="fish-date-'+k+'"><div class="fish-date-head"><div class="fish-date-num">'+pad(d.getDate())+'</div><div class="fish-date-copy">'+(d.getMonth()+1)+'月 · '+WD_CN[d.getDay()]+'<span>'+d.getFullYear()+'年 · '+items.length+' 项</span></div></div><div class="fish"><div class="fish-axis"></div>';
+    items.forEach((t,i)=>{const c=catById(t.cat),side=i%2===0?"left":"right";html+='<div class="fish-item '+side+'" style="--c:'+c.color+'"><span class="fish-node"></span><div class="fish-card'+(t.done?' done':'')+'" data-date="'+t.date+'" data-id="'+t.id+'"><button class="fc-edit" data-act="edit" title="编辑">✎</button><button class="fc-del" data-act="del" title="删除">×</button><div class="fc-title">'+esc(t.title)+'</div><div class="fc-meta">'+(t.time?'<span class="fc-time">'+esc(t.time)+'</span>':'')+'<span class="fc-cat">'+esc(c.name)+'</span></div></div></div>';});
+    html+='</div></section>';});
+  html += '</div></div>';
+  box.innerHTML = html;
+}
+
+/* ---------- 底部分类图例 ---------- */
+function renderLegend(){
+  const lg = $("legend");
+  lg.innerHTML = "";
+  state.cats.forEach(c => {
+    const n = countCat(c.id);
+    const el = document.createElement("div");
+    el.className = "lg" + (catVisible(c.id) ? "" : " off");
+    el.style.setProperty("--c", c.color);
+    el.innerHTML = '<span class="dot"></span><span class="nm"></span>';
+    $(".nm", el).textContent = c.name;
+    el.dataset.cat = c.id;
+    el.title = c.name + "：" + n + " 项（点击显示/隐藏）";
+    lg.appendChild(el);
+  });
+}
+function countCat(id){
+  return Object.keys(state.tasks).reduce((a, k) =>
+    a + (state.tasks[k] || []).filter(t => t.cat === id).length, 0);
+}
+const esc = s => String(s).replace(/[&<>"]/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[m]));
+
+function render(){
+  renderTitle();
+  $$("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === state.view));
+  $("viewDay").classList.toggle("on", state.view === "day");
+  $("viewWeek").classList.toggle("on", state.view === "week");
+  $("viewMonth").classList.toggle("on", state.view === "month");
+  $("viewFish").classList.toggle("on", state.view === "fish");
+  $("fishBtn").classList.toggle("on", state.view === "fish");
+  if (state.view === "day") renderDay();
+  else if (state.view === "week") renderWeek();
+  else if (state.view === "fish") renderFish();
+  else renderMonth();
+  renderLegend();
+  save();
+  fitWindow();
+}
+/* ============================================================
+   外观应用
+   ============================================================ */
+const BG = {
+  pic: "radial-gradient(120% 80% at 12% 8%, #8fc0d8 0%, #5d7f92 26%, #2c4150 52%, #16212a 78%, #0a1015 100%), linear-gradient(180deg,#7ea8bd 0%, #3c5566 45%, #10181e 100%)",
+  night: "radial-gradient(120% 90% at 80% 10%, #3b2f57 0%, #1f2338 40%, #101320 70%, #07080e 100%), linear-gradient(180deg,#2a2f45 0%, #14161f 100%)"
+};
+function applyCfg(){
+  const c = state.cfg, root = document.documentElement.style;
+  root.setProperty("--panel-w", c.width + "px");
+  root.setProperty("--panel-h", (c.height || 0) + "px");
+  $("board").classList.toggle("user-sized",Number(c.height)>0);
+  root.setProperty("--blur", c.blur + "px");
+  const a = (0.66 * (1 - c.alpha / 100) + 0.10).toFixed(3);
+  root.setProperty("--alpha", a);
+  if (c.text === "dark"){
+    root.setProperty("--text", "#15171d");
+    root.setProperty("--dim", "rgba(21,23,29,.66)");
+    root.setProperty("--dim-2", "rgba(21,23,29,.42)");
+    root.setProperty("--invert", "#ffffff");
+    root.setProperty("--glass-2", "rgba(255,255,255,.34)");
+    root.setProperty("--glass-3", "rgba(255,255,255,.52)");
+    root.setProperty("--line", "rgba(0,0,0,.10)");
+    root.setProperty("--line-2", "rgba(0,0,0,.14)");
+  } else {
+    root.setProperty("--text", "#ffffff");
+    root.setProperty("--dim", "rgba(255,255,255,.62)");
+    root.setProperty("--dim-2", "rgba(255,255,255,.40)");
+    root.setProperty("--invert", "#14141a");
+    root.setProperty("--glass-2", "rgba(255,255,255,.055)");
+    root.setProperty("--glass-3", "rgba(255,255,255,.09)");
+    root.setProperty("--line", "rgba(255,255,255,.10)");
+    root.setProperty("--line-2", "rgba(255,255,255,.16)");
+  }
+  // 应用窗口始终「桌面透明」：不绘制任何自带背景/壁纸
+  c.bg = "none";
+  document.body.classList.add("plain-wall");
+  $("board").style.transform = "translate(0px,0px) scale(" + (c.scale / 100) + ")";
+  // 同步设置面板控件
+  $("rWidth").value = c.width; $("vWidth").textContent = c.width;
+  $("rScale").value = c.scale; $("vScale").textContent = c.scale + "%";
+  $("rAlpha").value = c.alpha; $("vAlpha").textContent = c.alpha + "%";
+  $("rBlur").value  = c.blur;  $("vBlur").textContent  = c.blur + "px";
+  $$(".chip[data-text]").forEach(b => b.classList.toggle("on", b.dataset.text === c.text));
+  $("ckMonth").classList.toggle("on", !!c.monthTask);
+  $("ckRemind").classList.toggle("on", c.remind !== false);
+  $("ckSound").classList.toggle("on", c.sound !== false);
+  $("ckBackup").classList.toggle("on", c.autoBackup !== false);
+  syncTopUI();
+  syncFitUI();
+}
+
+/* ============================================================
+   设置面板
+   ============================================================ */
+function renderSettings(){
+  const box = $("catList");
+  box.innerHTML = "";
+  state.cats.forEach(c => {
+    const n = Object.keys(state.tasks).reduce((a, k) =>
+      a + (state.tasks[k] || []).filter(t => t.cat === c.id).length, 0);
+    const row = document.createElement("div");
+    row.className = "cat-row";
+    row.innerHTML = '<span class="cdot" title="点击换颜色"></span><span class="nm"></span>' +
+                    '<span class="ct">' + n + " 项</span>" +
+                    '<button class="cx" title="删除分类">×</button>';
+    const dot = $(".cdot", row);
+    dot.style.background = c.color;
+    $(".nm", row).textContent = c.name;
+    dot.onclick = () => {
+      const i = PALETTE.indexOf(c.color);
+      c.color = PALETTE[(i + 1) % PALETTE.length];
+      save(); renderSettings(); render();
+    };
+    $(".cx", row).onclick = () => {
+      if (state.cats.length <= 1) return toast("至少保留一个分类");
+      state.cats = state.cats.filter(x => x.id !== c.id);
+      state.hiddenCats = state.hiddenCats.filter(x => x !== c.id);
+      save(); renderSettings(); render(); toast("已删除分类「" + c.name + "」");
+    };
+    box.appendChild(row);
+  });
+  $("catColorPick").style.background = state.catColorPick;
+  fillCatSelect();
+}
+
+/* ============================================================
+   交互事件
+   ============================================================ */
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 1700);
+}
+function shift(n){
+  if (state.view === "day") cursor = addDays(cursor, n);
+  else if (state.view === "week") cursor = addDays(cursor, n * 7);
+  else { const d = new Date(cursor); d.setMonth(d.getMonth() + n); cursor = d; }
+  render();
+}
+/* ---------------- 新增待办 弹窗 ---------------- */
+let mCat = null;   // 弹窗里选中的分类
+function renderMCats(){
+  const box = $("mCats");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!mCat || !state.cats.some(c => c.id === mCat)) mCat = state.cats.length ? state.cats[0].id : null;
+  state.cats.forEach(c => {
+    const b = document.createElement("button");
+    b.className = "m-cat" + (c.id === mCat ? " on" : "");
+    b.style.setProperty("--c", c.color);
+    b.innerHTML = '<span class="m-dot"></span><span class="m-nm"></span>';
+    $(".m-nm", b).textContent = c.name;
+    b.onclick = () => { mCat = c.id; renderMCats(); };
+    box.appendChild(b);
+  });
+}
+let mEditing = null;   // 正在编辑的任务 { date, task }；null = 新增模式
+let mKind = "point";
+let mDoneValue = false;
+
+function openModal(defaults){ openForm(null, defaults || null); }
+
+/* 编辑已有任务：可改内容 / 日期 / 时间 / 分类，改日期会自动挪到新日期 */
+function openEdit(dateKey, id){
+  const t = (state.tasks[dateKey] || []).find(x => x.id === id);
+  if (!t) return;
+  openForm({ date: dateKey, task: t });
+}
+
+function syncTypeForm(){
+  $$("#mType button").forEach(b=>b.classList.toggle("on",b.dataset.kind===mKind));
+  $("mTimeWrap").style.display=mKind==="allDay"?"none":"";
+  $("mEndWrap").style.display=mKind==="range"?"":"none";
+  $("mStartLabel").textContent=mKind==="range"?"开始时间":"时间";
+}
+function openForm(edit, defaults){
+  if (!state.cats.length) return toast("请先在设置里添加分类");
+  mEditing = edit || null;
+  if (edit){
+    $("mHead").textContent = "编辑待办";
+    $("mOk").textContent = "保存";
+    $("mDel").style.display = "";
+    $("mTitle").value = edit.task.title;
+    mDoneValue=!!edit.task.done;
+    mKind = kindOf(edit.task);
+    $("mTime").value = edit.task.time || "";
+    const span=eventSpan(edit.task);$("mEnd").value=mKind==="range"?minutesToTime(span.end):"";
+    $("mDate").value = edit.date;
+    mCat = edit.task.cat;
+  } else {
+    $("mHead").textContent = "新增待办";
+    $("mOk").textContent = "添加";
+    $("mDel").style.display = "none";
+    $("mTitle").value = "";
+    mDoneValue=false;
+    mKind=(defaults&&defaults.kind)||"point";
+    $("mTime").value=(defaults&&defaults.time)||"";
+    $("mEnd").value=(defaults&&defaults.end)||"";
+    $("mDate").value=(defaults&&defaults.date)||key(cursor);
+    mCat = state.cats[0] && state.cats[0].id;
+  }
+  renderMCats();
+  $("mDone").classList.toggle("on",mDoneValue);
+  syncTypeForm();
+  $("modalMask").classList.add("on");
+  setTimeout(() => { const i = $("mTitle"); i.focus(); i.select(); }, 30);
+}
+function closeModal(){
+  const m = $("modalMask"); if (m) m.classList.remove("on");
+  mEditing = null;
+}
+function addTask(){
+  const title = $("mTitle").value.trim();
+  if (!title) return toast("先写点什么吧");
+  const k = $("mDate").value || key(cursor);
+  const kind=mKind, time=kind==="allDay"?"":($("mTime").value||"");
+  const end=kind==="range"?($("mEnd").value||""):"";
+  if(kind!=="allDay"&&!time)return toast("请选择时间");
+  if(kind==="range"&&(!end||timeToMinutes(end)<=timeToMinutes(time)))return toast("结束时间要晚于开始时间");
+  const duration=kind==="range"?timeToMinutes(end)-timeToMinutes(time):0;
+  const cat = mCat || (state.cats[0] && state.cats[0].id);
+
+  if (mEditing){
+    const from = mEditing.date, id = mEditing.task.id;
+    const arr = state.tasks[from] || [];
+    const t = arr.find(x => x.id === id);
+    mEditing = null;
+    if (!t){ closeModal(); return; }
+    const becameDone=!t.done&&mDoneValue;
+    t.title = title; t.kind=kind; t.time = time; t.end=end; t.duration = duration; t.cat = cat; t.done=mDoneValue;
+    if (from !== k){
+      state.tasks[from] = arr.filter(x => x.id !== id);
+      if (!state.tasks[k]) state.tasks[k] = [];
+      state.tasks[k].push(t);
+    }
+    save(); render(); closeModal();if(becameDone)playCompleteSound();
+    toast(from !== k ? ("已移动到 " + k) : "已保存");
+    return;
+  }
+
+  if (!state.tasks[k]) state.tasks[k] = [];
+  state.tasks[k].push({ id: uid(), title, kind, time, end, duration, cat, done: mDoneValue });
+  save(); render(); closeModal();if(mDoneValue)playCompleteSound();
+  toast("已添加到 " + k);
+}
+
+function deleteEditing(){
+  if (!mEditing) return;
+  const { date, task } = mEditing;
+  mEditing = null;
+  state.tasks[date] = (state.tasks[date] || []).filter(x => x.id !== task.id);
+  if (!state.tasks[date].length) delete state.tasks[date];
+  save(); render(); closeModal();
+  toast("已删除");
+}
+
+/* ============================================================
+   桌面窗口：置顶 / 紧贴看板 / 开机自启
+   （在浏览器里打开时这些功能自动降级，不影响网页预览）
+   ============================================================ */
+const isDesktop = !!(window.mochi && typeof window.mochi.fit === "function");
+
+function syncTopUI(){
+  const on = !!state.cfg.pin;
+  const p = $("pinBtn"); if (p) p.classList.toggle("on", on);
+  const c = $("ckTop");  if (c) c.classList.toggle("on", on);
+}
+
+function setTop(on){
+  state.cfg.pin = !!on;
+  if (isDesktop) window.mochi.setTop(state.cfg.pin);
+  syncTopUI(); save();
+}
+
+function syncFitUI(){
+  const on = !!state.cfg.fit && !state.compact;
+  const c = $("ckFit"); if (c) c.classList.toggle("on", !!state.cfg.fit);
+  document.body.classList.toggle("fit-on", on);
+}
+
+/* 让窗口紧贴看板：量出看板的实际占位（含整体缩放），把尺寸交给主进程，
+   四周不留透明死区 —— 否则透明区域会挡住桌面图标的点击 */
+let fitTimer = null;
+function fitWindow(){
+  if (!isDesktop) return;
+  syncFitUI();
+  if (!state.cfg.fit || state.compact) return;
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => {
+    const b = $("board"); if (!b) return;
+    const r = b.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const pad = 12;
+    window.mochi.fit(Math.ceil(r.width + pad * 2), Math.ceil(r.height + pad * 2));
+  }, 50);
+}
+
+/* ---------- 到点提醒：检查上次轮询到现在的窗口，避免睡眠/卡顿错过整分钟 ---------- */
+let lastReminderCheck = Date.now() - 65000;
+let reminded = {};
+try{ reminded=JSON.parse(localStorage.getItem("mochi_reminded_v2")||"{}"); }catch(e){reminded={};}
+function checkRemind(){
+  if (state.cfg.remind === false) return;
+  const now = new Date();
+  const k = key(now);
+  const windowStart=Math.max(lastReminderCheck,now.getTime()-10*60000);
+  (state.tasks[k] || []).forEach(t => {
+    if (t.done || !t.time) return;
+    const due=parseKey(k),parts=t.time.split(":").map(Number);due.setHours(parts[0],parts[1],0,0);
+    if(due.getTime()<=windowStart||due.getTime()>now.getTime())return;
+    const tag = k + "|" + t.id + "|" + t.time;
+    if (reminded[tag]) return;
+    reminded[tag] = 1;
+    const c = catById(t.cat);
+    const body = t.time + (c ? " · " + c.name : "");
+    if (isDesktop && typeof window.mochi.notify === "function") window.mochi.notify("日程提醒 · " + t.title, body);
+    toast("提醒：" + t.title + " · " + body);
+  });
+  lastReminderCheck=now.getTime();
+  try{localStorage.setItem("mochi_reminded_v2",JSON.stringify(reminded));}catch(e){}
+}
+
+let audioCtx=null;
+function playCompleteSound(){
+  if(state.cfg.sound===false)return;
+  try{audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);const now=audioCtx.currentTime;o.type="sine";o.frequency.setValueAtTime(740,now);o.frequency.exponentialRampToValueAtTime(1040,now+.09);g.gain.setValueAtTime(.0001,now);g.gain.exponentialRampToValueAtTime(.045,now+.012);g.gain.exponentialRampToValueAtTime(.0001,now+.18);o.start(now);o.stop(now+.2);}catch(e){}
+}
+
+/* ---------- 每日自动备份：数据快照写进 用户目录\backups，保留 7 份 ---------- */
+function autoBackup(){
+  if (state.cfg.autoBackup === false) return;
+  if (!isDesktop || typeof window.mochi.backup !== "function") return;
+  try {
+    const today = key(new Date());
+    if (localStorage.getItem("mochi_last_backup") === today) return;
+    localStorage.setItem("mochi_last_backup", today);
+    window.mochi.backup(JSON.stringify(state)).then(r => {
+      if (r && r.ok) toast("已自动备份（保留 " + r.kept + " 份）");
+    }).catch(() => {});
+  } catch (e) { }
+}
+
+function bind(){
+  /* 顶栏 */
+  $("seg").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    state.view = b.dataset.view; render();
+  });
+  $("prevBtn").onclick = () => shift(-1);
+  $("nextBtn").onclick = () => shift(1);
+  $("fishBtn").onclick = () => {
+    state.view = state.view === "fish" ? "day" : "fish";
+    render();
+  };
+  $("titleMain").onclick = () => { cursor = new Date(); if (state.view === "fish") state.view = "day"; render(); toast("回到今天"); };
+  $("addBtn").onclick = () => openModal();
+  /* 关闭窗口 */
+  $("closeBtn").onclick = () => {
+    if (window.mochi && window.mochi.close) window.mochi.close();
+    else toast("关闭窗口（需在客户端中运行）");
+  };
+  /* 缩小为便签：只显示今日日程 */
+  $("compactBtn").onclick = () => {
+    state.compact = !state.compact;
+    document.body.classList.toggle("compact", state.compact);
+    if (state.compact){ state.view = "day"; cursor = new Date(); }
+    const b = $("compactBtn");
+    b.textContent = state.compact ? "⤢" : "▢";
+    b.title = state.compact ? "还原完整看板" : "缩小为便签（今日日程）";
+    b.classList.toggle("on", state.compact);
+    render();
+    if (window.mochi){
+      if (state.compact) window.mochi.compact();
+      else { window.mochi.restore(); window.mochi.setTop(!!state.cfg.pin); }
+    }
+  };
+  /* 置顶：顶栏 📌 与设置里开关同步 */
+  $("pinBtn").onclick = () => setTop(!state.cfg.pin);
+  $("ckTop").onclick  = () => setTop(!state.cfg.pin);
+
+  /* 窗口紧贴看板 */
+  $("ckFit").onclick = () => {
+    state.cfg.fit = !state.cfg.fit;
+    syncFitUI(); save(); fitWindow();
+  };
+
+  /* 开机自启（仅桌面版） */
+  $("ckAuto").onclick = async () => {
+    if (!isDesktop || typeof window.mochi.setAutoLaunch !== "function") return toast("仅桌面版支持");
+    const want = !$("ckAuto").classList.contains("on");
+    const on = await window.mochi.setAutoLaunch(want);
+    $("ckAuto").classList.toggle("on", !!on);
+    toast(on ? "已开启开机自启" : "已关闭开机自启");
+  };
+
+  /* 到点提醒 / 自动备份 */
+  $("ckRemind").onclick = () => {
+    state.cfg.remind = state.cfg.remind === false;
+    applyCfg(); save();
+    toast(state.cfg.remind ? "已开启到点提醒" : "已关闭到点提醒");
+  };
+  $("ckSound").onclick = () => { state.cfg.sound=state.cfg.sound===false;applyCfg();save();toast(state.cfg.sound?"已开启完成提示音":"已关闭完成提示音"); };
+  $("testRemindBtn").onclick = () => { if(isDesktop&&window.mochi.notify)window.mochi.notify("日程提醒测试","提醒功能工作正常"); toast("测试提醒已发送"); };
+  $("ckBackup").onclick = () => {
+    state.cfg.autoBackup = state.cfg.autoBackup === false;
+    applyCfg(); save();
+    if (state.cfg.autoBackup) autoBackup();
+    toast(state.cfg.autoBackup ? "已开启每日自动备份" : "已关闭自动备份");
+  };
+  $("backupDirBtn").onclick = () => {
+    if (isDesktop && typeof window.mochi.openBackupDir === "function"){
+      window.mochi.openBackupDir().then(d => { if (d) toast("备份目录：" + d); });
+    } else toast("仅桌面版支持");
+  };
+
+  /* 导入备份 JSON（与「导出 JSON」配套） */
+  $("impBtn").onclick = () => $("impFile").click();
+  $("impFile").onchange = e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const o = JSON.parse(rd.result);
+        const tasks = o.tasks || (o.state && o.state.tasks);
+        if (!tasks || typeof tasks !== "object") throw new Error("文件里没有 tasks 字段");
+        state.tasks = tasks;
+        if (Array.isArray(o.cats) && o.cats.length) state.cats = o.cats;
+        if (Array.isArray(o.hiddenCats)) state.hiddenCats = o.hiddenCats;
+        if (o.cfg) state.cfg = Object.assign(state.cfg, o.cfg);
+        save(); applyCfg(); renderSettings(); render();
+        toast("已导入 " + Object.keys(state.tasks).length + " 天的日程");
+      } catch (err) {
+        toast("导入失败：" + err.message);
+      }
+      e.target.value = "";
+    };
+    rd.readAsText(f);
+  };
+
+  $("mCancel").onclick = closeModal;
+  $("mDel").onclick = deleteEditing;
+  $("mOk").onclick = addTask;
+  $("mDone").onclick=()=>{mDoneValue=!mDoneValue;$("mDone").classList.toggle("on",mDoneValue);};
+  $("mTitle").addEventListener("keydown", e => { if (e.key === "Enter") addTask(); });
+  $("mType").addEventListener("click",e=>{const b=e.target.closest("button[data-kind]");if(!b)return;mKind=b.dataset.kind;if(mKind==="range"&&$("mTime").value&&!$("mEnd").value)$("mEnd").value=minutesToTime(timeToMinutes($("mTime").value)+60);syncTypeForm();});
+  $("modalMask").addEventListener("mousedown", e => { if (e.target === $("modalMask")) closeModal(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+  $("gearBtn").onclick = e => {
+    e.stopPropagation();
+    const s = $("settings");
+    s.classList.toggle("hidden");
+    $("gearBtn").classList.toggle("on", !s.classList.contains("hidden"));
+    if (!s.classList.contains("hidden")) renderSettings();
+  };
+
+  /* 任务增删改（日视图） */
+  let suppressEventClick=null;
+  const eventKey=el=>el.dataset.date+"|"+el.dataset.id;
+  const bindLongComplete=(root,selector)=>{
+    let press=null;
+    const cancel=()=>{if(!press)return;clearTimeout(press.timer);press.el.classList.remove("long-pressing");press=null;};
+    root.addEventListener("pointerdown",e=>{if(e.button!==0)return;const el=e.target.closest(selector);if(!el||e.target.closest("button"))return;cancel();press={el,x:e.clientX,y:e.clientY,timer:setTimeout(()=>{if(!press)return;const k=press.el.dataset.date,id=press.el.dataset.id,t=(state.tasks[k]||[]).find(x=>x.id===id);if(!t){cancel();return;}t.done=!t.done;if(t.done)playCompleteSound();suppressEventClick={key:k+"|"+id,until:Date.now()+800};save();toast(t.done?"已标记为已完成":"已恢复为未完成");press=null;render();},450)};el.classList.add("long-pressing");});
+    root.addEventListener("pointermove",e=>{if(press&&Math.hypot(e.clientX-press.x,e.clientY-press.y)>8)cancel();});
+    root.addEventListener("pointerup",cancel);root.addEventListener("pointercancel",cancel);root.addEventListener("pointerleave",e=>{if(press&&e.buttons)cancel();});
+  };
+  bindLongComplete($("dayList"),".task,.time-block,.agenda-chip");
+  bindLongComplete($("wkGrid"),".pill,.wk-all-event");
+  $("dayList").addEventListener("click", e => {
+    // 便签只提供长按完成，短按时间或卡片不弹出编辑框。
+    if (state.compact) return;
+    const btn = e.target.closest("[data-act]");
+    const row = e.target.closest(".task,.time-block,.agenda-chip");
+    if (!row) return;
+    const k = row.dataset.date, id = row.dataset.id;
+    if(suppressEventClick&&suppressEventClick.key===eventKey(row)&&Date.now()<suppressEventClick.until)return;
+    const arr = state.tasks[k] || [];
+    const t = arr.find(x => x.id === id);
+    if (!t) return;
+    if (btn && btn.dataset.act === "del"){
+      state.tasks[k] = arr.filter(x => x.id !== id);
+      if (!state.tasks[k].length) delete state.tasks[k];
+      save(); render(); toast("已删除");
+      return;
+    }
+    openEdit(k, id);
+  });
+
+  /* 日视图空白处：单击创建时间点；长按后向下拖动创建时间段（15 分钟粒度） */
+  let dayCreate=null;
+  const daySnapAt=(track,clientY)=>Math.max(0,Math.min(1425,Math.round(((clientY-track.getBoundingClientRect().top)/54*60)/15)*15));
+  const showDayPreview=()=>{if(!dayCreate||dayCreate.started)return;dayCreate.started=true;const p=document.createElement("div");p.className="drag-preview";dayCreate.preview=p;dayCreate.track.appendChild(p);updateDayPreview();};
+  const updateDayPreview=()=>{if(!dayCreate||!dayCreate.preview)return;const end=Math.max(dayCreate.start+30,dayCreate.current);dayCreate.preview.style.top=(dayCreate.start/60*54)+"px";dayCreate.preview.style.height=Math.max(27,(end-dayCreate.start)/60*54)+"px";dayCreate.preview.textContent=minutesToTime(dayCreate.start)+"–"+minutesToTime(end);};
+  $("dayList").addEventListener("pointerdown",e=>{if(e.button!==0||e.target.closest(".time-block,.agenda-chip"))return;const track=e.target.closest(".day-track");if(!track)return;const start=daySnapAt(track,e.clientY);dayCreate={id:e.pointerId,track,date:track.dataset.date,start,current:start+30,started:false,preview:null,timer:setTimeout(showDayPreview,280)};$("dayList").setPointerCapture(e.pointerId);});
+  $("dayList").addEventListener("pointermove",e=>{if(!dayCreate||e.pointerId!==dayCreate.id)return;dayCreate.current=Math.max(dayCreate.start+30,daySnapAt(dayCreate.track,e.clientY));if(dayCreate.started){e.preventDefault();updateDayPreview();}});
+  const finishDayCreate=e=>{if(!dayCreate||e.pointerId!==dayCreate.id)return;const x=dayCreate;clearTimeout(x.timer);if(x.preview)x.preview.remove();dayCreate=null;try{$("dayList").releasePointerCapture(e.pointerId);}catch(err){}if(x.started){openModal({kind:"range",date:x.date,time:minutesToTime(x.start),end:minutesToTime(Math.max(x.start+30,x.current))});}else{openModal({kind:"point",date:x.date,time:minutesToTime(x.start)});}};
+  $("dayList").addEventListener("pointerup",finishDayCreate);
+  $("dayList").addEventListener("pointercancel",e=>{if(!dayCreate||e.pointerId!==dayCreate.id)return;clearTimeout(dayCreate.timer);if(dayCreate.preview)dayCreate.preview.remove();dayCreate=null;});
+
+  /* 周视图：点日期进当天；短按事件打开编辑，长按事件切换完成 */
+  $("wkHead").addEventListener("click", e => {
+    const cell = e.target.closest(".cell"); if (!cell) return;
+    cursor = parseKey(cell.dataset.date);
+    state.view = "day"; render();
+  });
+  $("wkGrid").addEventListener("click", e => {
+    const p = e.target.closest(".pill,.wk-all-event");
+    if (!p) return;
+    if(suppressEventClick&&suppressEventClick.key===eventKey(p)&&Date.now()<suppressEventClick.until)return;
+    openEdit(p.dataset.date,p.dataset.id);
+  });
+
+  /* 周视图空白处：单击创建时间点；长按后向下拖动创建时间段（15 分钟粒度） */
+  let wkCreate=null;
+  const snapAt=(col,clientY)=>Math.max(0,Math.min(1425,Math.round(((clientY-col.getBoundingClientRect().top)/54*60)/15)*15));
+  const showPreview=()=>{if(!wkCreate||wkCreate.started)return;wkCreate.started=true;const p=document.createElement("div");p.className="drag-preview";wkCreate.preview=p;wkCreate.col.appendChild(p);updatePreview();};
+  const updatePreview=()=>{if(!wkCreate||!wkCreate.preview)return;const end=Math.max(wkCreate.start+30,wkCreate.current);wkCreate.preview.style.top=(wkCreate.start/60*54)+"px";wkCreate.preview.style.height=Math.max(27,(end-wkCreate.start)/60*54)+"px";wkCreate.preview.textContent=minutesToTime(wkCreate.start)+"–"+minutesToTime(end);};
+  $("wkGrid").addEventListener("pointerdown",e=>{if(e.button!==0||e.target.closest(".pill,.wk-untimed,.wk-all-event"))return;const col=e.target.closest(".wk-col");if(!col)return;const start=snapAt(col,e.clientY);wkCreate={id:e.pointerId,col,date:col.dataset.date,start,current:start+30,started:false,preview:null,timer:setTimeout(showPreview,280)};$("wkGrid").setPointerCapture(e.pointerId);});
+  $("wkGrid").addEventListener("pointermove",e=>{if(!wkCreate||e.pointerId!==wkCreate.id)return;wkCreate.current=Math.max(wkCreate.start+30,snapAt(wkCreate.col,e.clientY));if(wkCreate.started){e.preventDefault();updatePreview();}});
+  const finishWeekCreate=e=>{if(!wkCreate||e.pointerId!==wkCreate.id)return;const x=wkCreate;clearTimeout(x.timer);if(x.preview)x.preview.remove();wkCreate=null;try{$("wkGrid").releasePointerCapture(e.pointerId);}catch(err){}if(x.started){openModal({kind:"range",date:x.date,time:minutesToTime(x.start),end:minutesToTime(Math.max(x.start+30,x.current))});}else{openModal({kind:"point",date:x.date,time:minutesToTime(x.start)});}};
+  $("wkGrid").addEventListener("pointerup",finishWeekCreate);
+  $("wkGrid").addEventListener("pointercancel",e=>{if(!wkCreate||e.pointerId!==wkCreate.id)return;clearTimeout(wkCreate.timer);if(wkCreate.preview)wkCreate.preview.remove();wkCreate=null;});
+
+  /* 月视图：点日期进当天 */
+  $("moGrid").addEventListener("click", e => {
+    const cell = e.target.closest(".mo-cell"); if (!cell) return;
+    cursor = parseKey(cell.dataset.date);
+    state.view = "day"; render();
+  });
+
+  /* 鱼骨视图：点卡片完成；点删除按钮删除 */
+  $("viewFish").addEventListener("click", e => {
+    const jump=e.target.closest("[data-jump]");
+    if(jump){const target=document.getElementById("fish-date-"+jump.dataset.jump);if(target)target.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"});return;}
+    const card = e.target.closest(".fish-card"); if (!card) return;
+    const k = card.dataset.date, id = card.dataset.id;
+    const arr = state.tasks[k] || []; const t = arr.find(x => x.id === id); if (!t) return;
+    if (e.target.closest('[data-act="del"]')){
+      state.tasks[k] = arr.filter(x => x.id !== id);
+      if (!state.tasks[k].length) delete state.tasks[k];
+      save(); render(); toast("已删除"); return;
+    }
+    if (e.target.closest('[data-act="edit"]')){ openEdit(k, id); return; }
+    t.done = !t.done; save(); render();
+    if (t.done && state.cfg.hideDone) toast("已完成，已自动隐藏");
+  });
+
+  /* 图例：显隐分类 */
+  $("legend").addEventListener("click", e => {
+    const el = e.target.closest(".lg"); if (!el) return;
+    const id = el.dataset.cat;
+    const i = state.hiddenCats.indexOf(id);
+    if (i < 0) state.hiddenCats.push(id); else state.hiddenCats.splice(i, 1);
+    save(); render();
+  });
+
+  /* 设置面板 */
+  $("rWidth").oninput = e => { state.cfg.width = +e.target.value; applyCfg(); save(); };
+  $("rScale").oninput = e => { state.cfg.scale = +e.target.value; applyCfg(); save(); };
+  $("rAlpha").oninput = e => { state.cfg.alpha = +e.target.value; applyCfg(); save(); };
+  $("rBlur").oninput  = e => { state.cfg.blur  = +e.target.value; applyCfg(); save(); };
+  $$(".chip[data-text]").forEach(b => b.onclick = () => { state.cfg.text = b.dataset.text; applyCfg(); save(); });
+  $("ckMonth").onclick = () => { state.cfg.monthTask = !state.cfg.monthTask; applyCfg(); render(); };
+  $("catColorPick").onclick = () => {
+    const i = PALETTE.indexOf(state.catColorPick);
+    state.catColorPick = PALETTE[(i + 1) % PALETTE.length];
+    $("catColorPick").style.background = state.catColorPick;
+  };
+  $("catAddBtn").onclick = () => {
+    const name = $("catName").value.trim();
+    if (!name) return toast("请输入分类名称");
+    state.cats.push({ id: uid(), name, color: state.catColorPick });
+    $("catName").value = "";
+    save(); renderSettings(); render(); toast("已添加分类「" + name + "」");
+  };
+  $$(".chip[data-exp]").forEach(b => b.onclick = () => exportAs(b.dataset.exp));
+  $("clearAll").onclick = () => {
+    if (!confirm("清空全部任务？（分类与外观设置保留）")) return;
+    state.tasks = {}; save(); render(); renderSettings(); toast("已清空");
+  };
+
+  /* 设置面板外点击关闭 */
+  document.addEventListener("click", e => {
+    const s = $("settings");
+    if (s.classList.contains("hidden")) return;
+    if (e.target.closest("#settings") || e.target.closest("#gearBtn")) return;
+    s.classList.add("hidden"); $("gearBtn").classList.remove("on");
+  });
+
+  /* 拖动看板 */
+  /* 窗口移动由顶栏的 -webkit-app-region:drag 交给系统处理（原网页内拖动已移除） */
+  let rsz = null;
+  window.addEventListener("mousemove", e => {
+    if (rsz){
+      const w = Math.max(480, Math.min(1400, rsz.w + (e.clientX - rsz.x) / rsz.scale));
+      const h = Math.max(420, Math.min(1200, rsz.h + (e.clientY - rsz.y) / rsz.scale));
+      state.cfg.width = Math.round(w / 10) * 10;
+      state.cfg.height = Math.round(h / 10) * 10;
+      applyCfg();
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    if (rsz){ rsz = null; save(); fitWindow(); }
+  });
+
+  /* 右下角缩放 */
+  $("resize").addEventListener("mousedown", e => {
+    const board=$("board"),scale=Math.max(.1,state.cfg.scale/100),rect=board.getBoundingClientRect();
+    rsz = { x:e.clientX,y:e.clientY,w:parseFloat(getComputedStyle(board).width),h:rect.height/scale,scale };
+    e.preventDefault(); e.stopPropagation();
+  });
+
+  /* 快捷键 */
+  document.addEventListener("keydown", e => {
+    if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.key === "ArrowLeft") shift(-1);
+    else if (e.key === "ArrowRight") shift(1);
+    else if (e.key.toLowerCase() === "t"){ cursor = new Date(); if (state.view === "fish") state.view = "day"; render(); }
+    else if (e.key === "1"){ state.view = "day"; render(); }
+    else if (e.key === "2"){ state.view = "week"; render(); }
+    else if (e.key === "3"){ state.view = "month"; render(); }
+    else if (e.key === "n"){ openModal(); }
+    else if (e.key === "Escape"){ $("settings").classList.add("hidden"); $("gearBtn").classList.remove("on"); closeModal(); }
+  });
+}
+/* ============================================================
+   导出
+   ============================================================ */
+function download(name, text, mime){
+  const blob = new Blob(["\ufeff" + text], { type: (mime || "text/plain") + ";charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+  toast("已导出 " + name);
+}
+function allRows(){
+  const out = [];
+  Object.keys(state.tasks).sort().forEach(k => {
+    (state.tasks[k] || []).forEach(t => out.push({
+      date: k, kind: kindOf(t), time: t.time || "", end: t.end || "", duration: t.duration || 0, title: t.title,
+      cat: catById(t.cat).name, done: t.done ? "已完成" : "未完成"
+    }));
+  });
+  return out;
+}
+function exportAs(kind){
+  if (kind === "sample"){
+    seed(); save(); render(); renderSettings();
+    toast("示例日程已载入本周");
+    return;
+  }
+  const rows = allRows();
+  if (!rows.length) return toast("还没有任何任务可导出");
+  if (kind === "json"){
+    download("日程看板_backup.json", JSON.stringify(state, null, 2), "application/json");
+    return;
+  }
+  if (kind === "csv"){
+    const head = "日期,类型,开始时间,结束时间,任务,分类,状态";
+    const typeName={allDay:"全天",point:"时间点",range:"时间段"};
+    const body = rows.map(r => [r.date,typeName[r.kind]||r.kind,r.time,r.end,'"' + r.title.replace(/"/g, '""') + '"',r.cat,r.done].join(","));
+    download("日程看板.csv", head + "\n" + body.join("\n"), "text/csv");
+    return;
+  }
+  if (kind === "ics"){
+    const z = n => pad(n);
+    const stamp = (() => { const d = new Date();
+      return d.getUTCFullYear() + z(d.getUTCMonth()+1) + z(d.getUTCDate()) + "T" + z(d.getUTCHours()) + z(d.getUTCMinutes()) + z(d.getUTCSeconds()) + "Z"; })();
+    const lines = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//MochiBoard//CN","CALSCALE:GREGORIAN"];
+    rows.forEach((r, i) => {
+      const d = parseKey(r.date);
+      lines.push("BEGIN:VEVENT");
+      lines.push("UID:mochi-" + r.date.replace(/-/g, "") + "-" + i + "@local");
+      lines.push("DTSTAMP:" + stamp);
+      lines.push("SUMMARY:" + r.title);
+      lines.push("CATEGORIES:" + r.cat);
+      if (r.time){
+        const [hh, mm] = r.time.split(":");
+        const s = new Date(d); s.setHours(+hh, +mm, 0, 0);
+        const mins=r.kind==="range"?(r.end?Math.max(15,timeToMinutes(r.end)-timeToMinutes(r.time)):(Number(r.duration)||60)):30;
+        const e = new Date(s.getTime() + mins * 60000);
+        const f = x => x.getFullYear() + z(x.getMonth()+1) + z(x.getDate()) + "T" + z(x.getHours()) + z(x.getMinutes()) + "00";
+        lines.push("DTSTART:" + f(s));
+        lines.push("DTEND:" + f(e));
+      } else {
+        const f = x => x.getFullYear() + z(x.getMonth()+1) + z(x.getDate());
+        lines.push("DTSTART;VALUE=DATE:" + f(d));
+        lines.push("DTEND;VALUE=DATE:" + f(addDays(d, 1)));
+      }
+      lines.push("END:VEVENT");
+    });
+    lines.push("END:VCALENDAR");
+    download("日程看板.ics", lines.join("\r\n"), "text/calendar");
+  }
+}
+
+/* ============================================================
+   启动
+   ============================================================ */
+function fillCatSelect(){
+  const sel = $("newCat");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = "";
+  state.cats.forEach(c => {
+    const o = document.createElement("option");
+    o.value = c.id; o.textContent = c.name;
+    sel.appendChild(o);
+  });
+  if (cur && state.cats.some(c => c.id === cur)) sel.value = cur;
+}
+function init(){
+  const had = load();
+  if (!had || !state.tasks || !Object.keys(state.tasks).length){
+    if (!state.tasks) state.tasks = {};
+    seed();
+  }
+  if (!state.cats || !state.cats.length){
+    state.cats = [
+      { id:"work",  name:"工作", color:"#4E9BF5" },
+      { id:"life",  name:"生活", color:"#4CD98A" },
+      { id:"study", name:"学习", color:"#F0B429" },
+      { id:"health",name:"健康", color:"#F0736F" }
+    ];
+  }
+  applyCfg();
+  fillCatSelect();
+  renderSettings();
+  bind();
+  render();
+
+  /* 桌面版：恢复上次的置顶状态、读取开机自启状态 */
+  if (isDesktop){
+    syncTopUI();
+    window.mochi.setTop(!!state.cfg.pin);
+    if (typeof window.mochi.onTopChanged === "function"){
+      window.mochi.onTopChanged(on => { state.cfg.pin = on; syncTopUI(); save(); });
+    }
+    if (typeof window.mochi.getAutoLaunch === "function"){
+      window.mochi.getAutoLaunch().then(v => {
+        const c = $("ckAuto"); if (c) c.classList.toggle("on", !!v);
+      }).catch(() => {});
+    }
+  }
+
+  /* 到点提醒 + 每日自动备份：启动后查一次，之后每 30 秒查一次 */
+  setTimeout(function(){ checkRemind(); autoBackup(); }, 1500);
+  setInterval(function(){ checkRemind(); autoBackup(); }, 30000);
+}
+init();
+</script>
+</body>
+</html>
