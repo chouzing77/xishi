@@ -1,6 +1,6 @@
 {
   "name": "mochi-calendar",
-  "version": "2.11.0",
+  "version": "3.0.1",
   "description": "毛玻璃半透明桌面日程看板（进阶日/周/月视图与可靠提醒）",
   "main": "main.js",
   "author": "周周",

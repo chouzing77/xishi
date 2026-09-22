@@ -296,6 +296,7 @@ body.fit-on #stage{padding:0;}
 .modal-mask.on{display:flex; animation:fade .18s ease both;}
 @keyframes fade{from{opacity:0;}to{opacity:1;}}
 .modal{
+  max-height:90vh;overflow-y:auto;
   width:min(440px, 86%);
   background:rgba(30,30,34,.95);
   border:1px solid rgba(255,255,255,.10);
@@ -316,6 +317,11 @@ body.fit-on #stage{padding:0;}
 .m-input::placeholder{color:rgba(255,255,255,.38);}
 .m-input:focus{border-color:rgba(255,255,255,.34); background:rgba(255,255,255,.1);}
 .m-input[type=date], .m-input[type=time]{color-scheme:dark;}
+select.m-input{color-scheme:dark;background-color:#303034;color:#fff;cursor:pointer;}
+select.m-input option{background-color:#303034;color:#fff;}
+select.m-input option:checked{background-color:#505058;color:#fff;}
+.m-field > .m-input + label{margin-top:18px;}
+#mReminderMinutes{margin-top:10px;color-scheme:dark;}
 .m-row2{display:flex; gap:12px;}
 .m-row2 .f-date{flex:1 1 58%; min-width:0;}
 .m-row2 .f-time{flex:1 1 42%; min-width:0;}
@@ -646,7 +652,7 @@ input[type=range]::-webkit-slider-thumb{
     <div class="resize" id="resize" title="拖动调整宽度"></div>
 
     <div class="modal-mask" id="modalMask">
-      <div class="modal" id="modal">
+      <div class="modal scroll-y" id="modal">
         <h3 id="mHead">新增待办</h3>
         <div class="m-field">
           <label>内容</label>
@@ -671,6 +677,14 @@ input[type=range]::-webkit-slider-thumb{
           <input class="m-input" id="mEnd" type="time" step="900" />
         </div>
         <div class="m-field">
+          <label for="mSchedule">日期安排</label>
+          <select class="m-input" id="mSchedule" aria-label="日期安排"><option value="once">单次事项</option><option value="span">连续跨天</option><option value="daily">每天重复（日期范围内）</option></select>
+          <label for="mUntil">结束日期（跨天 / 每天重复时填写）</label>
+          <input class="m-input" id="mUntil" type="date" />
+          <label for="mReminder">提醒</label>
+          <select class="m-input" id="mReminder"><option value="0">开始时提醒</option><option value="5">提前 5 分钟</option><option value="15">提前 15 分钟</option><option value="custom">自定义提前分钟数</option><option value="off">不提醒</option></select>
+          <input class="m-input" id="mReminderMinutes" type="number" min="0" max="10080" placeholder="自定义提前分钟数（0–10080）" aria-label="自定义提前分钟数" />
+          <p style="font-size:12px;color:var(--dim)">全天事项按每天 09:00 提醒。每天重复须设结束日期，最多 366 天；生成后每一天可独立完成、编辑或删除。跨天事项分段显示，开始时提醒一次；修改仅影响当前分段。</p>
           <label>分类</label>
           <div class="m-cats" id="mCats"></div>
         </div>
@@ -1312,6 +1326,11 @@ function openForm(edit, defaults){
     mCat = state.cats[0] && state.cats[0].id;
   }
   renderMCats();
+  $("mSchedule").value="once";
+  $("mUntil").value="";
+  const reminder=edit ? edit.task.reminderMinutes : 0;
+  $("mReminder").value=reminder===null?"off":[0,5,15].includes(reminder??0)?String(reminder??0):"custom";
+  $("mReminderMinutes").value=reminder??0;
   $("mDone").classList.toggle("on",mDoneValue);
   syncTypeForm();
   $("modalMask").classList.add("on");
@@ -1328,7 +1347,16 @@ function addTask(){
   const kind=mKind, time=kind==="allDay"?"":($("mTime").value||"");
   const end=kind==="range"?($("mEnd").value||""):"";
   if(kind!=="allDay"&&!time)return toast("请选择时间");
-  if(kind==="range"&&(!end||timeToMinutes(end)<=timeToMinutes(time)))return toast("结束时间要晚于开始时间");
+  const schedule=$("mSchedule").value, until=$("mUntil").value;
+  if(schedule!=="once"&&(!until||until<k))return toast("请选择不早于开始日期的结束日期");
+  if(mEditing&&schedule!=="once")return toast("编辑只修改当前事项；请通过新建创建跨天或每日重复事项");
+  if(schedule==="span"&&kind==="point")return toast("连续跨天请选择时间段或全天类型");
+  if(kind==="range"&&(!end||((schedule!=="span"||until===k)&&timeToMinutes(end)<=timeToMinutes(time))))return toast("结束时间要晚于开始时间");
+  const reminderChoice=$("mReminder").value;
+  const reminderMinutes=reminderChoice==="off"?null:Number(reminderChoice==="custom"?$("mReminderMinutes").value:reminderChoice);
+  if(reminderChoice==="custom"&&(!$("mReminderMinutes").value||!Number.isInteger(reminderMinutes)||reminderMinutes<0||reminderMinutes>10080))return toast("提前分钟数请输入 0–10080 的整数");
+  const dates=[k];
+  if(schedule!=="once"){let d=parseKey(k);while(key(d)<until&&dates.length<=366){d.setDate(d.getDate()+1);dates.push(key(d));}if(dates.length>366)return toast("日期范围最多 366 天");}
   const duration=kind==="range"?timeToMinutes(end)-timeToMinutes(time):0;
   const cat = mCat || (state.cats[0] && state.cats[0].id);
 
@@ -1340,6 +1368,7 @@ function addTask(){
     if (!t){ closeModal(); return; }
     const becameDone=!t.done&&mDoneValue;
     t.title = title; t.kind=kind; t.time = time; t.end=end; t.duration = duration; t.cat = cat; t.done=mDoneValue;
+    t.reminderMinutes=reminderMinutes;
     if (from !== k){
       state.tasks[from] = arr.filter(x => x.id !== id);
       if (!state.tasks[k]) state.tasks[k] = [];
@@ -1350,8 +1379,17 @@ function addTask(){
     return;
   }
 
-  if (!state.tasks[k]) state.tasks[k] = [];
-  state.tasks[k].push({ id: uid(), title, kind, time, end, duration, cat, done: mDoneValue });
+  const groupId=uid();
+  dates.forEach((date,i)=>{
+    const task={id:uid(),title,kind,time,end,duration,cat,done:mDoneValue,reminderMinutes,groupId,schedule};
+    if(schedule==="span"&&kind==="range"&&dates.length>1){
+      task.time=i===0?time:"00:00";task.end=i===dates.length-1?end:"23:59";
+      task.duration=timeToMinutes(task.end)-timeToMinutes(task.time);
+    }
+    if(schedule==="span"&&i>0)task.reminderMinutes=null;
+    if(!state.tasks[date])state.tasks[date]=[];
+    state.tasks[date].push(task);
+  });
   save(); render(); closeModal();if(mDoneValue)playCompleteSound();
   toast("已添加到 " + k);
 }
@@ -1416,18 +1454,19 @@ function checkRemind(){
   const now = new Date();
   const k = key(now);
   const windowStart=Math.max(lastReminderCheck,now.getTime()-10*60000);
-  (state.tasks[k] || []).forEach(t => {
-    if (t.done || !t.time) return;
-    const due=parseKey(k),parts=t.time.split(":").map(Number);due.setHours(parts[0],parts[1],0,0);
+  Object.entries(state.tasks).forEach(([date,tasks])=>tasks.forEach(t => {
+    if (t.done || t.reminderMinutes===null || (!t.time&&t.reminderMinutes===undefined)) return;
+    const due=parseKey(date),parts=(t.time||"09:00").split(":").map(Number);due.setHours(parts[0],parts[1],0,0);
+    due.setMinutes(due.getMinutes()-(Number(t.reminderMinutes)||0));
     if(due.getTime()<=windowStart||due.getTime()>now.getTime())return;
-    const tag = k + "|" + t.id + "|" + t.time;
+    const tag = date + "|" + t.id + "|" + due.getTime();
     if (reminded[tag]) return;
     reminded[tag] = 1;
     const c = catById(t.cat);
-    const body = t.time + (c ? " · " + c.name : "");
+    const body = date+" "+(t.time||"全天（09:00）") + (c ? " · " + c.name : "");
     if (isDesktop && typeof window.mochi.notify === "function") window.mochi.notify("日程提醒 · " + t.title, body);
     toast("提醒：" + t.title + " · " + body);
-  });
+  }));
   lastReminderCheck=now.getTime();
   try{localStorage.setItem("mochi_reminded_v2",JSON.stringify(reminded));}catch(e){}
 }
