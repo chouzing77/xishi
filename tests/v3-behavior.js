@@ -3,7 +3,8 @@ const html=fs.readFileSync(require('path').join(__dirname,'../src/index.html'),'
 new vm.Script(html.match(/<script>([\s\S]*)<\/script>/)[1]);
 const fields={};let serial=0;
 const c={Date,console,state:{tasks:{},cats:[{id:'work'}],cfg:{}},$:id=>fields[id],key:d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,parseKey:s=>new Date(s+'T00:00:00'),cursor:new Date(),timeToMinutes:s=>s.split(':').reduce((h,m)=>Number(h)*60+Number(m)),uid:()=>String(++serial),mCat:'work',mDoneValue:false,mEditing:null,mKind:'range',save(){},render(){},closeModal(){},playCompleteSound(){},toast(){},isDesktop:true,notifications:[],catById:()=>({name:'工作'}),localStorage:{setItem(){}}};
-c.window={mochi:{notify:(...a)=>c.notifications.push(a)}};
+c.reminderPending=new Set();
+c.window={mochi:{notify:(...a)=>{c.notifications.push(a);return {ok:true};}}};
 vm.createContext(c);
 vm.runInContext(html.slice(html.indexOf('function addTask(){'),html.indexOf('function deleteEditing(){')),c);
 vm.runInContext(html.slice(html.indexOf('function checkRemind(){'),html.indexOf('let audioCtx=null')),c);

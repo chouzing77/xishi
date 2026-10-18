@@ -40,7 +40,7 @@ test("提醒使用时间窗口而非整分钟硬匹配", html.includes("windowSt
 test("提醒防重复记录持久化", html.includes("mochi_reminded_v2"));
 test("通知点击可唤回窗口", main.includes('n.on("click"'));
 test("Windows 通知身份已注册", main.includes("setAppUserModelId"));
-test("通知桥接存在", preload.includes("notify:") && main.includes('ipcMain.on("notify"'));
+test("通知桥接可返回显示确认", preload.includes('ipcRenderer.invoke("notify"') && main.includes('ipcMain.handle("notify"') && main.includes('n.on("show"'));
 test("仅事件完成播放轻巧提示音", html.includes("playCompleteSound") && html.includes("if(t.done)playCompleteSound()") && html.includes("if(becameDone)playCompleteSound()") && !html.includes('playSound("tap")'));
 test("周视图全天事件支持短按编辑与长按完成", html.includes("wk-all-event") && html.includes('bindLongComplete($("wkGrid"),".pill,.wk-all-event")'));
 test("所有滚动区域使用统一细滚动条", html.includes(":where(#stage,.scroll-y,.agenda-shell,.wk-grid,#viewFish,.settings,.view)::-webkit-scrollbar"));

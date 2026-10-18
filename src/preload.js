@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld("mochi", {
   setAutoLaunch: (on) => ipcRenderer.invoke("win-set-autolaunch", !!on),
 
   // 到点提醒（系统通知）
-  notify: (title, body) => ipcRenderer.send("notify", { title: title, body: body }),
+  notify: (title, body) => ipcRenderer.invoke("notify", { title: title, body: body }),
 
   // 备份
   backup:  (json) => ipcRenderer.invoke("backup-save", json),

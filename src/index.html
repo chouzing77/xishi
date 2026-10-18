@@ -678,13 +678,13 @@ input[type=range]::-webkit-slider-thumb{
         </div>
         <div class="m-field">
           <label for="mSchedule">日期安排</label>
-          <select class="m-input" id="mSchedule" aria-label="日期安排"><option value="once">单次事项</option><option value="span">连续跨天</option><option value="daily">每天重复（日期范围内）</option></select>
+          <select class="m-input" id="mSchedule" aria-label="日期安排"><option value="once">单次事项</option><option value="span">连续跨天</option><option value="daily">每天重复</option><option value="weekly">每周重复</option><option value="biweekly">每两周重复</option><option value="monthly">每月重复</option><option value="bimonthly">每两个月重复</option></select>
           <label for="mUntil">结束日期（跨天 / 每天重复时填写）</label>
           <input class="m-input" id="mUntil" type="date" />
           <label for="mReminder">提醒</label>
           <select class="m-input" id="mReminder"><option value="0">开始时提醒</option><option value="5">提前 5 分钟</option><option value="15">提前 15 分钟</option><option value="custom">自定义提前分钟数</option><option value="off">不提醒</option></select>
           <input class="m-input" id="mReminderMinutes" type="number" min="0" max="10080" placeholder="自定义提前分钟数（0–10080）" aria-label="自定义提前分钟数" />
-          <p style="font-size:12px;color:var(--dim)">全天事项按每天 09:00 提醒。每天重复须设结束日期，最多 366 天；生成后每一天可独立完成、编辑或删除。跨天事项分段显示，开始时提醒一次；修改仅影响当前分段。</p>
+          <p style="font-size:12px;color:var(--dim)">全天事项以 09:00 为提醒基准。重复须设结束日期，最多生成 366 项；月重复遇到不存在的日期取当月末日，下个月仍按原日期。各项独立编辑、完成、删除。跨天只提醒首段。请保持软件运行；重启补发最近 24 小时内遗漏的提醒。</p>
           <label>分类</label>
           <div class="m-cats" id="mCats"></div>
         </div>
@@ -1356,7 +1356,19 @@ function addTask(){
   const reminderMinutes=reminderChoice==="off"?null:Number(reminderChoice==="custom"?$("mReminderMinutes").value:reminderChoice);
   if(reminderChoice==="custom"&&(!$("mReminderMinutes").value||!Number.isInteger(reminderMinutes)||reminderMinutes<0||reminderMinutes>10080))return toast("提前分钟数请输入 0–10080 的整数");
   const dates=[k];
-  if(schedule!=="once"){let d=parseKey(k);while(key(d)<until&&dates.length<=366){d.setDate(d.getDate()+1);dates.push(key(d));}if(dates.length>366)return toast("日期范围最多 366 天");}
+  if(schedule!=="once"){
+    const anchor=parseKey(k), step={weekly:7,biweekly:14}[schedule]||1;
+    for(let i=1;i<=366;i++){
+      let d=new Date(anchor);
+      if(schedule==="monthly"||schedule==="bimonthly"){
+        d.setDate(1);d.setMonth(anchor.getMonth()+i*(schedule==="monthly"?1:2));
+        d.setDate(Math.min(anchor.getDate(),new Date(d.getFullYear(),d.getMonth()+1,0).getDate()));
+      }else d.setDate(anchor.getDate()+i*step);
+      if(key(d)>until)break;
+      dates.push(key(d));
+    }
+    if(dates.length>366)return toast("最多生成 366 项，请缩短结束日期");
+  }
   const duration=kind==="range"?timeToMinutes(end)-timeToMinutes(time):0;
   const cat = mCat || (state.cats[0] && state.cats[0].id);
 
@@ -1446,25 +1458,31 @@ function fitWindow(){
 }
 
 /* ---------- 到点提醒：检查上次轮询到现在的窗口，避免睡眠/卡顿错过整分钟 ---------- */
-let lastReminderCheck = Date.now() - 65000;
+let lastReminderCheck = Date.now() - 24*60*60000;
+const reminderPending=new Set();
 let reminded = {};
 try{ reminded=JSON.parse(localStorage.getItem("mochi_reminded_v2")||"{}"); }catch(e){reminded={};}
 function checkRemind(){
   if (state.cfg.remind === false) return;
   const now = new Date();
   const k = key(now);
-  const windowStart=Math.max(lastReminderCheck,now.getTime()-10*60000);
+  const windowStart=now.getTime()-24*60*60000;
   Object.entries(state.tasks).forEach(([date,tasks])=>tasks.forEach(t => {
     if (t.done || t.reminderMinutes===null || (!t.time&&t.reminderMinutes===undefined)) return;
     const due=parseKey(date),parts=(t.time||"09:00").split(":").map(Number);due.setHours(parts[0],parts[1],0,0);
     due.setMinutes(due.getMinutes()-(Number(t.reminderMinutes)||0));
     if(due.getTime()<=windowStart||due.getTime()>now.getTime())return;
     const tag = date + "|" + t.id + "|" + due.getTime();
-    if (reminded[tag]) return;
-    reminded[tag] = 1;
+    if (reminded[tag] || reminderPending.has(tag)) return;
     const c = catById(t.cat);
     const body = date+" "+(t.time||"全天（09:00）") + (c ? " · " + c.name : "");
-    if (isDesktop && typeof window.mochi.notify === "function") window.mochi.notify("日程提醒 · " + t.title, body);
+    if (isDesktop && typeof window.mochi.notify === "function") {
+      reminderPending.add(tag);
+      Promise.resolve(window.mochi.notify("日程提醒 · " + t.title, body)).then(result=>{
+        if(result&&result.ok){reminded[tag]=1;try{localStorage.setItem("mochi_reminded_v2",JSON.stringify(reminded));}catch(e){}}
+        else toast("系统提醒未确认，将重试；请检查 Windows 通知设置");
+      }).catch(()=>toast("提醒发送失败，将自动重试")).finally(()=>reminderPending.delete(tag));
+    } else {reminded[tag]=1;}
     toast("提醒：" + t.title + " · " + body);
   }));
   lastReminderCheck=now.getTime();
@@ -1551,7 +1569,10 @@ function bind(){
     toast(state.cfg.remind ? "已开启到点提醒" : "已关闭到点提醒");
   };
   $("ckSound").onclick = () => { state.cfg.sound=state.cfg.sound===false;applyCfg();save();toast(state.cfg.sound?"已开启完成提示音":"已关闭完成提示音"); };
-  $("testRemindBtn").onclick = () => { if(isDesktop&&window.mochi.notify)window.mochi.notify("日程提醒测试","提醒功能工作正常"); toast("测试提醒已发送"); };
+  $("testRemindBtn").onclick = async () => {
+    if(!isDesktop||!window.mochi.notify)return toast("请在桌面客户端测试系统提醒");
+    try{const r=await window.mochi.notify("夕拾 · 提醒测试","如果你看到这条通知，系统提醒已送达。请再创建一分钟后的事项测试定时触发。");toast(r&&r.ok?"系统已反馈显示，请确认实际看到了提醒":"系统未确认显示，请检查 Windows 通知 / 勿扰设置");}catch(e){toast("提醒发送失败，请重试");}
+  };
   $("ckBackup").onclick = () => {
     state.cfg.autoBackup = state.cfg.autoBackup === false;
     applyCfg(); save();
@@ -1898,7 +1919,7 @@ function init(){
 
   /* 到点提醒 + 每日自动备份：启动后查一次，之后每 30 秒查一次 */
   setTimeout(function(){ checkRemind(); autoBackup(); }, 1500);
-  setInterval(function(){ checkRemind(); autoBackup(); }, 30000);
+  setInterval(function(){ checkRemind(); autoBackup(); }, 5000);
 }
 init();
 </script>

@@ -69,7 +69,8 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   }, hasSaved ? init : {}));
 
@@ -184,9 +185,13 @@ ipcMain.handle("win-info", () => ({
 }));
 
 /* 到点提醒：渲染进程到点后请求弹系统通知 */
-ipcMain.on("notify", (e, payload) => {
+const activeNotifications = new Set();
+ipcMain.handle("notify", (e, payload) => new Promise(resolve => {
+  let settled=false;
+  const finish=result=>{if(!settled){settled=true;clearTimeout(timer);resolve(result);}};
+  const timer=setTimeout(()=>finish({ok:false,reason:"timeout"}),10000);
   try {
-    if (!Notification.isSupported()) return;
+    if (!Notification.isSupported()) return finish({ok:false,reason:"unsupported"});
     const n = new Notification({
       title: (payload && payload.title) || "日程提醒",
       body: (payload && payload.body) || "",
@@ -194,10 +199,14 @@ ipcMain.on("notify", (e, payload) => {
       urgency: "critical",
       timeoutType: "never"
     });
+    activeNotifications.add(n);
+    n.on("show",()=>finish({ok:true}));
+    n.on("failed",(event,error)=>{activeNotifications.delete(n);finish({ok:false,reason:String(error)});});
+    n.on("close",()=>activeNotifications.delete(n));
     n.on("click", () => { if (win) { win.show(); win.focus(); } });
     n.show();
-  } catch (err) { /* 通知失败不影响主流程 */ }
-});
+  } catch (err) { finish({ok:false,reason:String(err)}); }
+}));
 
 /* 每日自动备份：把渲染进程传来的数据快照写进 userData\backups，只留最近 7 份 */
 function backupDir() { return path.join(app.getPath("userData"), "backups"); }
